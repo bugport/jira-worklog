@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: jira-worklog:latest
+    container_name: jira-worklog
+    volumes:
+      - .:/app
+      - .env:/app/.env:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python -m src.main --help
+    networks:
+      - default
+    
+networks:
+  default:
+    driver: bridge
+

@@ -87,45 +87,147 @@ class JiraAuth:
             
         Returns:
             requests.Response object
+            
+        Raises:
+            requests.exceptions.HTTPError: If HTTP error occurs (4xx, 5xx)
         """
         url = f"{self.base_url}{endpoint}"
         response = self.session.request(method, url, **kwargs)
         
-        # Raise exception for bad status codes
+        # Handle 401 errors with detailed message
+        if response.status_code == 401:
+            error_msg = "Authentication failed (401 Unauthorized)"
+            try:
+                error_data = response.json()
+                if error_data.get('errorMessages'):
+                    error_msg = ', '.join(error_data['errorMessages'])
+                elif error_data.get('errors'):
+                    error_msg = str(error_data['errors'])
+            except:
+                if response.text:
+                    error_msg += f": {response.text[:200]}"
+            
+            # Create a more informative exception
+            http_error = requests.exceptions.HTTPError(
+                f"401 Client Error: Unauthorized for url: {url}\n{error_msg}",
+                response=response
+            )
+            raise http_error
+        
+        # Raise exception for other bad status codes
         response.raise_for_status()
         return response
     
     def test_connection(self) -> bool:
         """Test connection to Jira server.
         
+        Uses /rest/auth/1/session endpoint per JIRA REST API 8.5.0 docs
+        to verify authentication, then optionally fetches user details.
+        
         Returns:
             True if connection successful, False otherwise
         """
         try:
-            # Test connection by getting current user info
-            response = self._make_request('GET', '/myself')
-            user_info = response.json()
+            # First, test authentication using /rest/auth/1/session
+            # This is the recommended endpoint for authentication verification
+            # according to JIRA REST API 8.5.0 documentation
+            auth_url = f"{self.settings.jira_url}/rest/auth/1/session"
+            response = self.session.get(auth_url)
+            
+            if response.status_code == 401:
+                # Authentication failed - show detailed error
+                error_msg = "Authentication failed (401 Unauthorized)"
+                try:
+                    error_data = response.json()
+                    if error_data.get('errorMessages'):
+                        error_msg += f"\n\nError: {', '.join(error_data['errorMessages'])}"
+                except:
+                    error_msg += f"\n\nResponse: {response.text[:200]}"
+                
+                console.print(Panel(
+                    f"[red]✗[/red] Authentication failed!\n\n"
+                    f"{error_msg}\n\n"
+                    f"Please check:\n"
+                    f"• JIRA_SERVER is correct (no trailing slash): {self.settings.jira_url}\n"
+                    f"• JIRA_EMAIL is correct: {self.settings.jira_email}\n"
+                    f"• JIRA_API_TOKEN is valid (not expired)\n"
+                    f"• For API token authentication, use email as username\n"
+                    f"• Ensure Basic Auth is enabled on your JIRA instance\n\n"
+                    f"Get your API token from:\n"
+                    f"https://id.atlassian.com/manage-profile/security/api-tokens",
+                    title="Authentication Error (401)",
+                    border_style="red"
+                ))
+                return False
+            
+            response.raise_for_status()
+            session_info = response.json()
+            
+            # Get user details using /rest/api/{version}/myself
+            # Try to get full user info with displayName and emailAddress
+            try:
+                user_response = self._make_request('GET', '/myself')
+                user_info = user_response.json()
+                display_name = user_info.get('displayName', session_info.get('name', self.settings.jira_email))
+                email = user_info.get('emailAddress', self.settings.jira_email)
+            except:
+                # Fallback to session info if /myself fails
+                display_name = session_info.get('name', self.settings.jira_email)
+                email = self.settings.jira_email
             
             console.print(Panel(
                 f"[green]✓[/green] Connected to Jira successfully!\n\n"
                 f"Server: {self.settings.jira_url}\n"
                 f"API Base: {self.base_url}\n"
-                f"User: {user_info.get('displayName', self.settings.jira_email)}\n"
-                f"Email: {user_info.get('emailAddress', self.settings.jira_email)}",
+                f"User: {display_name}\n"
+                f"Email: {email}\n"
+                f"Username: {session_info.get('name', 'N/A')}",
                 title="Connection Test",
                 border_style="green"
             ))
             return True
             
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if hasattr(e, 'response') and e.response else 'Unknown'
+            error_msg = str(e)
+            
+            # Try to get error details from response
+            if hasattr(e, 'response') and e.response:
+                try:
+                    error_data = e.response.json()
+                    if error_data.get('errorMessages'):
+                        error_msg = ', '.join(error_data['errorMessages'])
+                    elif error_data.get('errors'):
+                        error_msg = str(error_data['errors'])
+                except:
+                    error_msg = e.response.text[:200] if e.response.text else error_msg
+            
+            console.print(Panel(
+                f"[red]✗[/red] Connection failed! (HTTP {status_code})\n\n"
+                f"Error: {error_msg}\n\n"
+                f"Please check:\n"
+                f"• JIRA_SERVER is correct (no trailing slash): {self.settings.jira_url}\n"
+                f"• JIRA_EMAIL is correct: {self.settings.jira_email}\n"
+                f"• JIRA_API_TOKEN is valid (not expired)\n"
+                f"• JIRA_API_VERSION is correct (if specified)\n"
+                f"• Network connectivity and firewall rules\n"
+                f"• JIRA_VERIFY_SSL setting if using self-signed certificates\n\n"
+                f"Get your API token from:\n"
+                f"https://id.atlassian.com/manage-profile/security/api-tokens",
+                title="Connection Error",
+                border_style="red"
+            ))
+            return False
         except requests.exceptions.RequestException as e:
             console.print(Panel(
                 f"[red]✗[/red] Connection failed!\n\n"
                 f"Error: {str(e)}\n\n"
                 f"Please check:\n"
-                f"• JIRA_SERVER is correct (no trailing slash)\n"
-                f"• JIRA_EMAIL is correct\n"
+                f"• JIRA_SERVER is correct (no trailing slash): {self.settings.jira_url}\n"
+                f"• JIRA_EMAIL is correct: {self.settings.jira_email}\n"
                 f"• JIRA_API_TOKEN is valid\n"
-                f"• JIRA_API_VERSION is correct (if specified)\n\n"
+                f"• Network connectivity\n"
+                f"• JIRA_VERIFY_SSL setting if using self-signed certificates\n\n"
                 f"Get your API token from:\n"
                 f"https://id.atlassian.com/manage-profile/security/api-tokens",
                 title="Connection Error",

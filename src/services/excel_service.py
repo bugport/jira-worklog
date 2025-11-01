@@ -248,11 +248,11 @@ class ExcelService:
                             errors.append(f"Row {idx + 2}: {str(e)}")
                             continue
                         
-                        # Create work log entry
+                        # Create work log entry (using alias 'date' for Excel column compatibility)
                         entry = WorkLogEntry(
                             issue_key=issue_key,
                             time_logged_hours=time_hours,
-                            date=work_date,
+                            date=work_date,  # Using alias
                             comment=comment if comment else None
                         )
                         
@@ -585,6 +585,7 @@ class ExcelService:
                             continue
                         
                         # Create work log update (even if no changes detected)
+                        # Using alias 'date' for Excel column compatibility
                         update = WorkLogUpdate(
                             worklog_id=worklog_id,
                             issue_key=issue_key,
@@ -592,7 +593,7 @@ class ExcelService:
                             new_time_hours=new_time_hours,
                             original_comment=orig_comment if orig_comment else None,
                             new_comment=comment if comment else None,
-                            date=work_date
+                            date=work_date  # Using alias
                         )
                         
                         # Only add if there are changes

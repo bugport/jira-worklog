@@ -98,7 +98,7 @@ def import_cmd(input_file: str, dry_run: bool, verbose: bool):
                 table.add_row(
                     entry.issue_key,
                     str(entry.time_logged_hours),
-                    str(entry.date),
+                    str(entry.work_date),
                     comment
                 )
             

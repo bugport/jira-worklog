@@ -20,9 +20,11 @@ class WorkLog(BaseModel):
 class WorkLogEntry(BaseModel):
     """Work log entry from Excel."""
     
+    model_config = ConfigDict(populate_by_name=True)
+    
     issue_key: str = Field(..., description="Jira issue key (e.g., PROJ-123)")
     time_logged_hours: Decimal = Field(..., description="Time logged in hours (decimal)")
-    date: date = Field(..., description="Work log date (YYYY-MM-DD)")
+    work_date: date = Field(..., description="Work log date (YYYY-MM-DD)", alias="date")
     comment: Optional[str] = Field(None, description="Work log comment")
     
     @field_validator('issue_key', mode='before')
@@ -64,7 +66,7 @@ class WorkLogEntry(BaseModel):
         time_spent_seconds = int(float(self.time_logged_hours) * 3600)
         
         # Convert date to datetime (start of day in UTC)
-        started = datetime.combine(self.date, datetime.min.time())
+        started = datetime.combine(self.work_date, datetime.min.time())
         
         return WorkLog(
             issue_key=self.issue_key,
@@ -107,13 +109,15 @@ class ExistingWorkLog(BaseModel):
 class WorkLogUpdate(BaseModel):
     """Work log update entry from Excel diff."""
     
+    model_config = ConfigDict(populate_by_name=True)
+    
     worklog_id: str = Field(..., description="Jira work log ID")
     issue_key: str = Field(..., description="Jira issue key")
     original_time_hours: Decimal = Field(..., description="Original time in hours")
     new_time_hours: Decimal = Field(..., description="New time in hours")
     original_comment: Optional[str] = Field(None, description="Original comment")
     new_comment: Optional[str] = Field(None, description="New comment")
-    date: date = Field(..., description="Work log date")
+    work_date: date = Field(..., description="Work log date", alias="date")
     
     @field_validator('new_time_hours', mode='before')
     @classmethod

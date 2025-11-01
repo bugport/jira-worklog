@@ -135,7 +135,7 @@ class JiraService:
             return SyncResult(
                 issue_key=issue_key,
                 success=True,
-                message=f"Work log added successfully ({worklog_entry.time_logged_hours} hours on {worklog_entry.date})",
+                message=f"Work log added successfully ({worklog_entry.time_logged_hours} hours on {worklog_entry.work_date})",
                 worklog_id=str(worklog_obj.id) if hasattr(worklog_obj, 'id') else None
             )
             
@@ -194,7 +194,7 @@ class JiraService:
                             results.append(SyncResult(
                                 issue_key=entry.issue_key,
                                 success=True,
-                                message=f"Validation passed ({entry.time_logged_hours}h on {entry.date})"
+                                message=f"Validation passed ({entry.time_logged_hours}h on {entry.work_date})"
                             ))
                         except JIRAError:
                             results.append(SyncResult(
@@ -307,7 +307,7 @@ class JiraService:
             new_time_seconds = int(float(worklog_update.new_time_hours) * 3600)
             
             # Convert date to datetime
-            started = datetime.combine(worklog_update.date, datetime.min.time())
+            started = datetime.combine(worklog_update.work_date, datetime.min.time())
             
             # Update work log using Jira API
             # Use the Jira library's worklog update method

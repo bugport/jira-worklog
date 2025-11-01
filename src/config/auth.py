@@ -58,9 +58,14 @@ class JiraAuth:
     
     @property
     def base_url(self) -> str:
-        """Get base JIRA API URL."""
+        """Get base JIRA API URL.
+        
+        According to JIRA REST API docs, 'latest' is the symbolic version
+        that resolves to the most recent version supported by the JIRA instance.
+        This is the recommended default for compatibility with JIRA 8.5.0+.
+        """
         base = self.settings.jira_url.rstrip('/')
-        api_version = '2'  # Default to API version 2
+        api_version = 'latest'  # Default to 'latest' per JIRA REST API best practices
         
         if self.settings.jira_api_version:
             api_version = self.settings.jira_api_version.strip()
@@ -172,8 +177,8 @@ class JiraAuth:
                     version_part = api_path.split('/api/')[-1]
                     result['api_version'] = version_part
             else:
-                result['api_version'] = '2'  # Default
-                result['api_path'] = '/rest/api/2'
+                result['api_version'] = 'latest'  # Default to 'latest' per JIRA REST API docs
+                result['api_path'] = '/rest/api/latest'
             
             # Try to get server info to check compatibility
             try:

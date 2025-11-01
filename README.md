@@ -73,11 +73,13 @@ JIRA_API_TOKEN=your-api-token
 # WARNING: Only use in development/testing environments
 JIRA_VERIFY_SSL=false
 
-# Optional: JIRA API version (default: auto-detected)
+# Optional: JIRA API version (default: 'latest')
 # Specify the API version to use (e.g., '1.0', '2', '3', 'latest')
+# 'latest' is the recommended default - resolves to the most recent version supported by your JIRA instance
 # If set, this takes precedence over JIRA_API_PATH
+# Example: JIRA_API_VERSION=latest (will use /rest/api/latest - recommended for JIRA 8.5.0+)
 # Example: JIRA_API_VERSION=1.0 (will use /rest/api/1.0)
-JIRA_API_VERSION=1.0
+JIRA_API_VERSION=latest
 
 # Optional: Custom JIRA API path (default: auto-detected)
 # Set if your JIRA API is located at a custom path
@@ -91,14 +93,15 @@ JIRA_API_PATH=/rest/api/latest
 ```
 
 **Note**: 
-- **To use API version 1.0**: Set `JIRA_API_VERSION=1.0` (this will use `/rest/api/1.0`)
+- **Default API version**: Uses `latest` by default, which resolves to the most recent version supported by your JIRA instance (recommended for JIRA 8.5.0+)
+- **To use a specific API version**: Set `JIRA_API_VERSION=1.0` or `JIRA_API_VERSION=2` (this will use `/rest/api/1.0` or `/rest/api/2`)
 - **If your JIRA API is located at `https://baseurl/rest/api/latest`**: 
   - Set `JIRA_SERVER=https://baseurl` (base URL without the API path)
-  - Set `JIRA_API_PATH=/rest/api/latest` or `/api/latest` (the library will handle the conversion)
+  - Set `JIRA_API_VERSION=latest` (default) or `JIRA_API_PATH=/rest/api/latest`
   
-The JIRA library automatically adds `/rest` prefix, so if you specify `/rest/api/latest`, it will be converted to `/api/latest` to avoid the duplicate `/rest//rest` issue.
-
 **Priority**: If `JIRA_API_VERSION` is set, it takes precedence over `JIRA_API_PATH`.
+
+**Best Practice**: Use `JIRA_API_VERSION=latest` for compatibility with the latest JIRA REST API features and JIRA 8.5.0+.
 
 ### Getting Your API Token
 

@@ -52,8 +52,17 @@ class JiraAuth:
                     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 
                 # Configure custom API path if specified
+                # Note: JIRA library automatically adds '/rest' prefix, so rest_path should be the path after '/rest'
+                # Example: If API is at /rest/api/latest, rest_path should be /api/latest
                 if self.settings.jira_api_path:
-                    options['rest_path'] = self.settings.jira_api_path.rstrip('/')
+                    api_path = self.settings.jira_api_path.rstrip('/')
+                    # Remove leading '/rest' if present to avoid duplicate
+                    if api_path.startswith('/rest'):
+                        api_path = api_path[5:]  # Remove '/rest' prefix
+                    # Ensure path starts with '/' for proper URL construction
+                    if not api_path.startswith('/'):
+                        api_path = '/' + api_path
+                    options['rest_path'] = api_path
                 
                 self._client = JIRA(
                     server=self.settings.jira_url,

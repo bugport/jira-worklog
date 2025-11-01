@@ -75,6 +75,8 @@ JIRA_VERIFY_SSL=false
 
 # Optional: Custom JIRA API path (default: auto-detected)
 # Set if your JIRA API is located at a custom path
+# You can specify either '/rest/api/latest' or '/api/latest'
+# (The library automatically adds '/rest', so '/rest' prefix will be removed if present)
 # Example: If your API is at https://baseurl/rest/api/latest:
 #   JIRA_SERVER=https://baseurl
 #   JIRA_API_PATH=/rest/api/latest
@@ -83,7 +85,9 @@ JIRA_API_PATH=/rest/api/latest
 
 **Note**: If your JIRA API is located at `https://baseurl/rest/api/latest`, set:
 - `JIRA_SERVER=https://baseurl` (base URL without the API path)
-- `JIRA_API_PATH=/rest/api/latest` (the API path)
+- `JIRA_API_PATH=/rest/api/latest` or `/api/latest` (the library will handle the conversion)
+
+The JIRA library automatically adds `/rest` prefix, so if you specify `/rest/api/latest`, it will be converted to `/api/latest` to avoid the duplicate `/rest//rest` issue.
 
 ### Getting Your API Token
 

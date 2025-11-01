@@ -1,12 +1,17 @@
 """Jira issue data models."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
 from datetime import datetime
 
 
 class Issue(BaseModel):
     """Jira issue model."""
+    
+    model_config = ConfigDict(
+        populate_by_name=True,
+        from_attributes=True
+    )
     
     key: str = Field(..., description="Issue key (e.g., PROJ-123)")
     summary: str = Field(..., description="Issue summary")
@@ -16,11 +21,6 @@ class Issue(BaseModel):
     assignee: Optional[str] = Field(None, description="Assignee name")
     created: Optional[datetime] = Field(None, description="Creation date")
     updated: Optional[datetime] = Field(None, description="Last update date")
-    
-    class Config:
-        """Pydantic configuration."""
-        populate_by_name = True
-        from_attributes = True
     
     def to_dict(self) -> dict:
         """Convert to dictionary for Excel export."""

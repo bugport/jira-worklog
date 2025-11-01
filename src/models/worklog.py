@@ -1,6 +1,6 @@
 """Work log data models."""
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from typing import Optional
 from datetime import datetime, date
 from decimal import Decimal
@@ -9,14 +9,12 @@ from decimal import Decimal
 class WorkLog(BaseModel):
     """Work log entry model."""
     
+    model_config = ConfigDict(from_attributes=True)
+    
     issue_key: str = Field(..., description="Jira issue key")
     time_spent_seconds: int = Field(..., description="Time spent in seconds")
     comment: Optional[str] = Field(None, description="Work log comment")
     started: Optional[datetime] = Field(None, description="Work log start time")
-    
-    class Config:
-        """Pydantic configuration."""
-        from_attributes = True
 
 
 class WorkLogEntry(BaseModel):
@@ -27,11 +25,14 @@ class WorkLogEntry(BaseModel):
     date: date = Field(..., description="Work log date (YYYY-MM-DD)")
     comment: Optional[str] = Field(None, description="Work log comment")
     
-    @field_validator('issue_key')
+    @field_validator('issue_key', mode='before')
     @classmethod
-    def validate_issue_key(cls, v: str) -> str:
+    def validate_issue_key(cls, v) -> str:
         """Validate issue key format."""
-        if not v or not isinstance(v, str):
+        if not v:
+            raise ValueError("Issue key is required")
+        v = str(v).strip()
+        if not v:
             raise ValueError("Issue key is required")
         
         # Basic validation: should match pattern PROJ-123
@@ -44,10 +45,13 @@ class WorkLogEntry(BaseModel):
         
         return v.upper()
     
-    @field_validator('time_logged_hours')
+    @field_validator('time_logged_hours', mode='before')
     @classmethod
-    def validate_time(cls, v: Decimal) -> Decimal:
+    def validate_time(cls, v) -> Decimal:
         """Validate time logged."""
+        if isinstance(v, str):
+            v = Decimal(v)
+        v = Decimal(v)
         if v <= 0:
             raise ValueError("Time logged must be greater than 0")
         if v > 24:
@@ -73,6 +77,8 @@ class WorkLogEntry(BaseModel):
 class ExistingWorkLog(BaseModel):
     """Existing work log from Jira with ID for tracking."""
     
+    model_config = ConfigDict(from_attributes=True)
+    
     worklog_id: str = Field(..., description="Jira work log ID")
     issue_key: str = Field(..., description="Jira issue key")
     time_spent_seconds: int = Field(..., description="Time spent in seconds")
@@ -80,10 +86,6 @@ class ExistingWorkLog(BaseModel):
     comment: Optional[str] = Field(None, description="Work log comment")
     started: datetime = Field(..., description="Work log start time")
     author: Optional[str] = Field(None, description="Work log author")
-    
-    class Config:
-        """Pydantic configuration."""
-        from_attributes = True
     
     def to_excel_row(self, issue_summary: str = "", issue_type: str = "") -> dict:
         """Convert to Excel row format with original values tracked."""
@@ -113,10 +115,13 @@ class WorkLogUpdate(BaseModel):
     new_comment: Optional[str] = Field(None, description="New comment")
     date: date = Field(..., description="Work log date")
     
-    @field_validator('new_time_hours')
+    @field_validator('new_time_hours', mode='before')
     @classmethod
-    def validate_time(cls, v: Decimal) -> Decimal:
+    def validate_time(cls, v) -> Decimal:
         """Validate time logged."""
+        if isinstance(v, str):
+            v = Decimal(v)
+        v = Decimal(v)
         if v <= 0:
             raise ValueError("Time logged must be greater than 0")
         if v > 24:
@@ -133,13 +138,11 @@ class WorkLogUpdate(BaseModel):
 class SyncResult(BaseModel):
     """Work log sync result."""
     
+    model_config = ConfigDict(from_attributes=True)
+    
     issue_key: str
     worklog_id: Optional[str] = None
     success: bool
     message: str
     operation: str = Field(default="add", description="Operation: add, update, or delete")
-    
-    class Config:
-        """Pydantic configuration."""
-        from_attributes = True
 

@@ -1,7 +1,8 @@
 """Excel file operations for Jira work logs."""
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple, Dict
+from collections import defaultdict
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -23,9 +24,12 @@ class ExcelService:
     """Service for Excel file operations."""
     
     REQUIRED_COLUMNS = [
+        "Hierarchy Number",
         "Issue Key",
         "Summary",
         "Type",
+        "Parent Issue Key",
+        "Parent Issue Type",
         "Time Logged (hours)",
         "Date",
         "Comment",
@@ -318,19 +322,28 @@ class ExcelService:
             console.print(f"[yellow]Warning: Could not update Excel status:[/yellow] {str(e)}")
             return False
     
-    def export_worklog_summary(self, worklogs: List[ExistingWorkLog], issues_dict: dict, output_file: str) -> bool:
+    def export_worklog_summary(
+        self, 
+        worklogs: List[ExistingWorkLog], 
+        issues_dict: dict, 
+        output_file: str,
+        hierarchical_groups: Optional[List] = None,
+        all_issues: Optional[List] = None
+    ) -> bool:
         """Export worklog summary to Excel with original values tracking.
         
         Args:
             worklogs: List of ExistingWorkLog objects
             issues_dict: Dictionary mapping issue keys to (summary, type) tuples
             output_file: Output Excel file path
+            hierarchical_groups: Optional list of (epic_key, HierarchicalGroup) tuples for grouped export
+            all_issues: Optional list of all Issue objects for hierarchy display
             
         Returns:
             True if successful, False otherwise
         """
         try:
-            if not worklogs:
+            if not worklogs and not hierarchical_groups:
                 console.print("[yellow]No work logs to export.[/yellow]")
                 return False
             
@@ -343,19 +356,274 @@ class ExcelService:
                 
                 # Create DataFrame from worklogs
                 data = []
-                for wl in worklogs:
-                    issue_key = wl.issue_key
-                    summary, issue_type = issues_dict.get(issue_key, ("", ""))
-                    data.append(wl.to_excel_row(summary, issue_type))
+                
+                if hierarchical_groups:
+                    # Export with hierarchical grouping: Epic > Story/Task > Subtask (recursive tree view)
+                    from ..services.hierarchy_service import HierarchicalGroup
+                    
+                    # Create issue map from all_issues to get parent information
+                    issue_map = {}
+                    if all_issues:
+                        issue_map = {issue.key: issue for issue in all_issues}
+                    
+                    epic_counter = 0  # Track Epic numbers (1, 2, 3, ...)
+                    
+                    for epic_key, group in hierarchical_groups:
+                        # Create subtasks map for this group for recursive traversal
+                        subtasks_map = group.subtasks_map
+                        epic_counter += 1
+                        epic_number = str(epic_counter)  # Epic number: 1, 2, 3, ...
+                        
+                        # Build complete children map: map each parent issue key to all its children
+                        # This includes both subtasks and tasks that are children of stories/tasks
+                        children_map = defaultdict(list)
+                        # Add subtasks from subtasks_map
+                        for parent_key, children_list in subtasks_map.items():
+                            children_map[parent_key].extend(children_list)
+                        # Also check all_issues for tasks/stories that have children
+                        if all_issues:
+                            for issue in all_issues:
+                                # If issue has a parent_key, it's a child of that parent
+                                if issue.parent_key:
+                                    if issue.parent_key not in children_map:
+                                        children_map[issue.parent_key] = []
+                                    if issue not in children_map[issue.parent_key]:
+                                        children_map[issue.parent_key].append(issue)
+                        
+                        def dump_issue_tree_recursive(
+                            issue: Issue, 
+                            depth: int, 
+                            number_prefix: str, 
+                            parent_issue: Optional[Issue] = None, 
+                            child_index: int = 0,
+                            visited: Optional[set] = None,
+                            max_depth: int = 20
+                        ) -> None:
+                            """Recursively dump issue tree to Excel (following recursion best practices).
+                            
+                            Filesystem analogy: recursively traverse directory tree with cycle detection.
+                            
+                            Implementation follows Recursion-of-Thought principles:
+                            1. Base case: Issue has no children → process and return
+                            2. Recursive case: Process issue, then recurse on each child
+                            3. Cycle detection: Track visited issues to prevent infinite loops
+                            4. Depth limiting: Prevent stack overflow for deeply nested structures
+                            
+                            Args:
+                                issue: Issue node to process
+                                depth: Current depth level (0=Epic/root, 1=Story/Task, 2+=Subtask)
+                                number_prefix: Hierarchical number prefix (e.g., "1", "1.1", "1.1.1")
+                                parent_issue: Parent issue node (for parent info extraction)
+                                child_index: Index of this child among siblings (0-based)
+                                visited: Set of visited issue keys (for cycle detection)
+                                max_depth: Maximum recursion depth to prevent stack overflow
+                            
+                            Edge cases handled:
+                            - Empty children list: Base case, just processes the issue
+                            - Null/None issue: Should not occur (caller validates)
+                            - Cycle detection: Skips if issue already visited
+                            - Max depth exceeded: Stops recursion and logs warning
+                            """
+                            nonlocal data, issue_map, issues_dict, worklogs, subtasks_map, epic_number, children_map
+                            
+                            # Base case 1: Cycle detection - prevent infinite loops
+                            if visited is None:
+                                visited = set()
+                            if issue.key in visited:
+                                # Cycle detected - skip this node to prevent infinite recursion
+                                return
+                            visited.add(issue.key)
+                            
+                            # Base case 2: Depth limit - prevent stack overflow
+                            if depth > max_depth:
+                                # Depth limit exceeded - stop recursion to prevent stack overflow
+                                # Note: We could log this, but it's an edge case that shouldn't occur in normal JIRA hierarchies
+                                return
+                            
+                            # Step 1: Build hierarchy number for this node
+                            # - Epics use epic_number (1, 2, 3, ...)
+                            # - Children append their index+1 to parent's number (1.1, 1.2, 1.1.1, ...)
+                            if depth == 0:
+                                hierarchy_number = epic_number  # Root/Epic level
+                            else:
+                                hierarchy_number = f"{number_prefix}.{child_index + 1}" if number_prefix else str(child_index + 1)
+                            
+                            # Step 2: Extract issue information
+                            issue_summary, issue_type = issues_dict.get(issue.key, (issue.summary or issue.key, issue.issue_type))
+                            if not issue_summary or issue_summary.strip() == "":
+                                issue_summary = issue.key  # Fallback to key if summary empty
+                            
+                            # Step 3: Build indentation prefix (2 spaces per depth level, root has no indentation)
+                            # Indentation formula: "  " * max(0, depth - 1) + "└─ " for children
+                            if depth == 0:
+                                indentation = ""  # Root/Epic - no indentation
+                            else:
+                                indentation = "  " * (depth - 1) + "└─ "  # Children - 2 spaces per level
+                            
+                            # Step 4: Determine parent information
+                            parent_key_str = ""
+                            parent_type_str = ""
+                            parent_indicator = ""
+                            
+                            if issue.parent_epic_key and not issue.parent_key:
+                                # Direct child of Epic (Story or Task directly under Epic)
+                                # This includes Tasks that are direct children of Epics
+                                parent_key_str = issue.parent_epic_key
+                                parent_type_str = issue.parent_issue_type or "Epic"
+                                if depth == 1:  # Only show indicator for direct Epic children
+                                    parent_indicator = f" ({parent_type_str})"
+                            elif issue.parent_key and parent_issue:
+                                # Child of Story/Task (e.g., Task under Story, Subtask under Task)
+                                parent_key_str = parent_issue.key
+                                parent_type_str = issue.parent_issue_type or parent_issue.issue_type
+                            elif issue.parent_epic_key:
+                                # Has Epic link but also has parent - parent is more specific
+                                if parent_issue:
+                                    parent_key_str = parent_issue.key
+                                    parent_type_str = issue.parent_issue_type or parent_issue.issue_type
+                            
+                            # Step 5: Find worklogs for this issue
+                            issue_worklogs = [wl for wl in worklogs if wl.issue_key == issue.key]
+                            
+                            # Step 6: Process current node (base case - single node processing)
+                            if issue_worklogs:
+                                # Node has worklogs - add each worklog as a row
+                                for wl in issue_worklogs:
+                                    summary_with_indicator = f"{indentation}{issue_summary}{parent_indicator}" if parent_indicator else f"{indentation}{issue_summary}"
+                                    row = wl.to_excel_row(summary_with_indicator, issue_type, parent_key_str, parent_type_str, hierarchy_number)
+                                    data.append(row)
+                            else:
+                                # Node has no worklogs - add single row with zero time
+                                summary_with_indicator = f"{indentation}{issue_summary}{parent_indicator}" if parent_indicator else f"{indentation}{issue_summary}"
+                                issue_row = {
+                                    "Hierarchy Number": hierarchy_number,
+                                    "Worklog ID": "",
+                                    "Issue Key": issue.key,
+                                    "Summary": summary_with_indicator,
+                                    "Type": issue_type,
+                                    "Parent Issue Key": parent_key_str,
+                                    "Parent Issue Type": parent_type_str,
+                                    "Time Logged (hours)": "0",
+                                    "Original Time (hours)": "0",
+                                    "Date": "",
+                                    "Comment": "",
+                                    "Original Comment": "",
+                                    "Author": "",
+                                    "Status": "No Worklog"
+                                }
+                                data.append(issue_row)
+                            
+                            # Step 7: Recursive case - process children (if any)
+                            # Base case: If no children, recursion stops here (implicit return)
+                            # Get children from complete children_map (includes all children: tasks, subtasks, etc.)
+                            children = children_map.get(issue.key, [])
+                            
+                            if not children:
+                                # Base case: No children - recursion terminates naturally
+                                return
+                            
+                            # Recursive step: Process each child with increased depth and updated number prefix
+                            # Filesystem analogy: Traverse subdirectories recursively
+                            for child_index_num, child in enumerate(children):
+                                # Recursive call with:
+                                # - Increased depth (depth + 1)
+                                # - Updated number prefix (current hierarchy_number)
+                                # - Current issue as parent
+                                # - Child index for numbering
+                                # - Visited set (shared across recursion) for cycle detection
+                                dump_issue_tree_recursive(
+                                    issue=child,
+                                    depth=depth + 1,
+                                    number_prefix=hierarchy_number,
+                                    parent_issue=issue,
+                                    child_index=child_index_num,
+                                    visited=visited,  # Share visited set to detect cross-tree cycles
+                                    max_depth=max_depth
+                                )
+                        
+                        # Wrapper: Process Epic root, then recursively dump its subtree
+                        # Base case: If Epic doesn't exist, skip this group
+                        if not group.epic:
+                            continue
+                        
+                        # Step 1: Process Epic root node (depth 0)
+                        epic_summary, epic_type = issues_dict.get(group.epic.key, (group.epic.summary or group.epic.key, group.epic.issue_type))
+                        if not epic_summary or epic_summary.strip() == "":
+                            epic_summary = group.epic.key
+                        epic_row = {
+                            "Hierarchy Number": epic_number,
+                            "Worklog ID": "",
+                            "Issue Key": group.epic.key,
+                            "Summary": epic_summary,  # No indentation for root
+                            "Type": epic_type,
+                            "Parent Issue Key": "",
+                            "Parent Issue Type": "",
+                            "Time Logged (hours)": "",
+                            "Original Time (hours)": "",
+                            "Date": "",
+                            "Comment": "",
+                            "Original Comment": "",
+                            "Author": "",
+                            "Status": "Epic"
+                        }
+                        data.append(epic_row)
+                        
+                        # Step 2: Recursively dump all children (Stories/Tasks) under Epic
+                        # Filesystem analogy: Traverse root directory contents
+                        for story_index, story_task in enumerate(group.stories_tasks):
+                            dump_issue_tree_recursive(
+                                issue=story_task,
+                                depth=1,  # Start at depth 1 (children of root)
+                                number_prefix=epic_number,
+                                parent_issue=group.epic,
+                                child_index=story_index,
+                                visited=set(),  # New visited set for each Epic subtree
+                                max_depth=20
+                            )
+                        
+                        # No empty row between groups - removed to avoid empty lines
+                else:
+                    # Export flat list (original behavior)
+                    # Create issue map from all_issues to get parent information
+                    issue_map = {}
+                    if all_issues:
+                        issue_map = {issue.key: issue for issue in all_issues}
+                    
+                    for wl in worklogs:
+                        issue_key = wl.issue_key
+                        summary, issue_type = issues_dict.get(issue_key, ("", ""))
+                        # Use issue key as fallback if summary is empty
+                        if not summary or summary.strip() == "":
+                            summary = issue_key
+                        
+                        # Get parent information
+                        parent_key_str = ""
+                        parent_type_str = ""
+                        if issue_key in issue_map:
+                            issue = issue_map[issue_key]
+                            if issue.parent_epic_key:
+                                parent_key_str = issue.parent_epic_key
+                                parent_type_str = issue.parent_issue_type or "Epic"
+                            elif issue.parent_key:
+                                parent_key_str = issue.parent_key
+                                parent_type_str = issue.parent_issue_type or ""
+                                if not parent_type_str and parent_key_str in issue_map:
+                                    parent_type_str = issue_map[parent_key_str].issue_type
+                        
+                        # Flat list doesn't have hierarchy numbers
+                        data.append(wl.to_excel_row(summary, issue_type, parent_key_str, parent_type_str, ""))
                 
                 df = pd.DataFrame(data)
                 
                 # Define column order for worklog summary
                 worklog_columns = [
+                    "Hierarchy Number",
                     "Worklog ID",
                     "Issue Key",
                     "Summary",
                     "Type",
+                    "Parent Issue Key",
+                    "Parent Issue Type",
                     "Time Logged (hours)",
                     "Original Time (hours)",
                     "Date",
@@ -440,6 +708,28 @@ class ExcelService:
                         # Date - date format
                         date_cell = worksheet[f'G{row}']
                         date_cell.number_format = 'YYYY-MM-DD'
+                    
+                    # Add summary row at the end
+                    summary_row = len(df) + 2
+                    worksheet[f'A{summary_row}'] = "TOTAL"
+                    worksheet[f'A{summary_row}'].font = Font(bold=True, color="FFFFFF")
+                    worksheet[f'A{summary_row}'].fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                    worksheet[f'A{summary_row}'].alignment = Alignment(horizontal="right", vertical="center")
+                    
+                    # Sum formula for time logged
+                    worksheet[f'E{summary_row}'] = f"=SUM(E2:E{len(df) + 1})"
+                    worksheet[f'E{summary_row}'].number_format = '0.00'
+                    worksheet[f'E{summary_row}'].font = Font(bold=True, color="FFFFFF")
+                    worksheet[f'E{summary_row}'].fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                    
+                    # Sum formula for original time
+                    worksheet[f'F{summary_row}'] = f"=SUM(F2:F{len(df) + 1})"
+                    worksheet[f'F{summary_row}'].number_format = '0.00'
+                    worksheet[f'F{summary_row}'].font = Font(bold=True, color="FFFFFF")
+                    worksheet[f'F{summary_row}'].fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+                    
+                    # Merge cells for total label if needed (optional)
+                    # worksheet.merge_cells(f'A{summary_row}:D{summary_row}')
                     
                     # Add instructions sheet
                     instructions_df = pd.DataFrame({

@@ -1,5 +1,6 @@
 """Worklog summary command for exporting existing worklogs and importing updates."""
 
+from typing import Optional
 import click
 from rich.console import Console
 from rich.panel import Panel
@@ -7,7 +8,10 @@ from rich.table import Table
 
 from ..services.jira_service import JiraService
 from ..services.excel_service import ExcelService
+from ..services.hierarchy_service import HierarchyService, HierarchicalGroup
+from ..services.filter_service import FilterService
 from ..config.auth import JiraAuth
+from decimal import Decimal
 
 console = Console()
 
@@ -15,8 +19,9 @@ console = Console()
 @click.command()
 @click.option(
     '--filter',
+    'filter_ids',
     type=str,
-    help='Jira filter ID to export worklogs from'
+    help='Jira filter ID(s) to export worklogs from (comma-separated: --filter 12345,67890 or multiple: --filter 12345 --filter 67890)'
 )
 @click.option(
     '--jql',
@@ -45,22 +50,64 @@ console = Console()
     is_flag=True,
     help='Show verbose output'
 )
-def worklog_summary(filter: str, jql: str, output: str, input_file: str, dry_run: bool, verbose: bool):
+@click.option(
+    '--time-range',
+    type=click.Choice(['previous', 'current'], case_sensitive=False),
+    default=None,
+    help='Filter worklogs by time range: previous (previous month) or current (current month). Default: all time'
+)
+@click.option(
+    '--all-users',
+    is_flag=True,
+    default=False,
+    help='Include worklogs from all users (default: only current user)'
+)
+@click.option(
+    '--issues-only',
+    is_flag=True,
+    default=False,
+    help='Only include issues with worklogs (default: include all issues even with no worklogs)'
+)
+@click.option(
+    '--group-by-hierarchy',
+    is_flag=True,
+    default=False,
+    help='Group issues by hierarchy: Epic > Story/Task > Subtask (default: flat list)'
+)
+def worklog_summary(filter_ids: str, jql: str, output: str, input_file: str, dry_run: bool, verbose: bool, time_range: Optional[str], all_users: bool, issues_only: bool, group_by_hierarchy: bool):
     """Export existing worklogs from filter to Excel, then import updates back.
     
     This command supports two modes:
-    1. Export mode: Export existing worklogs from a filter to Excel with original values
+    1. Export mode: Export existing worklogs from filter(s) to Excel with original values
+       - By default includes ALL issues from filter (even with no worklogs, showing 0 time)
+       - By default filters worklogs by current user only
+       - Supports time range filtering (previous or current month)
+       - Supports multiple filters (combines with OR)
+       - Supports hierarchical grouping: Epic > Story/Task > Subtask
+       - Shows sum of all worklogs in export summary
     2. Import mode: Import edited Excel file and update worklogs based on detected changes (diff)
     
     Examples:
     
     \b
-    Export existing worklogs from filter:
+    Export all issues from single filter (including those with no worklogs):
     $ python -m src.main worklog-summary --filter 12345 --output worklog_summary.xlsx
     
     \b
-    Export from JQL query:
-    $ python -m src.main worklog-summary --jql "project = PROJ" --output worklog_summary.xlsx
+    Export from multiple filters with hierarchical grouping (comma-separated):
+    $ python -m src.main worklog-summary --filter 12345,67890 --group-by-hierarchy --output worklog_summary.xlsx
+    
+    \b
+    Export from JQL query for current month, current user only:
+    $ python -m src.main worklog-summary --jql "project = PROJ" --time-range current --output worklog_summary.xlsx
+    
+    \b
+    Export previous month worklogs, all users, grouped by hierarchy (multiple filters):
+    $ python -m src.main worklog-summary --filter 12345,67890 --time-range previous --all-users --group-by-hierarchy --output worklog_summary.xlsx
+    
+    \b
+    Export only issues that have worklogs (exclude issues with 0 time):
+    $ python -m src.main worklog-summary --filter 12345 --issues-only --output worklog_summary.xlsx
     
     \b
     Import and update worklogs (dry-run first):
@@ -177,55 +224,159 @@ def worklog_summary(filter: str, jql: str, output: str, input_file: str, dry_run
                 border_style="cyan"
             ))
             
-            # Get worklogs from filter/JQL
-            if filter:
+            # Get worklogs from filter(s)/JQL with filtering options
+            if filter_ids:
+                # Parse comma-separated filter IDs
+                filter_id_list = [fid.strip() for fid in filter_ids.split(',') if fid.strip()]
+                
+                if not filter_id_list:
+                    console.print("[red]No valid filter IDs provided.[/red]")
+                    raise click.Abort()
+                
                 if verbose:
-                    console.print(f"[cyan]Fetching worklogs from filter:[/cyan] {filter}")
-                worklogs = jira_service.get_worklogs_from_filter(filter)
+                    if len(filter_id_list) == 1:
+                        console.print(f"[cyan]Fetching worklogs from filter:[/cyan] {filter_id_list[0]}")
+                    else:
+                        console.print(f"[cyan]Fetching worklogs from {len(filter_id_list)} filters:[/cyan] {', '.join(filter_id_list)}")
+                
+                # Combine multiple filters
+                filter_service = FilterService(jira_service.auth)
+                combined_jql = filter_service.combine_filters_jql(filter_id_list)
+                
+                if not combined_jql:
+                    console.print("[red]Failed to combine filters.[/red]")
+                    raise click.Abort()
+                
+                if verbose and len(filter_id_list) > 1:
+                    console.print(f"[dim]Combined JQL: {combined_jql[:100]}...[/dim]" if len(combined_jql) > 100 else f"[dim]Combined JQL: {combined_jql}[/dim]")
+                
+                worklogs = jira_service.get_worklogs_from_jql(
+                    combined_jql,
+                    include_all_issues=not issues_only,
+                    filter_by_current_user=not all_users,
+                    time_range=time_range.lower() if time_range else None
+                )
             else:
                 if verbose:
                     console.print(f"[cyan]Fetching worklogs from JQL:[/cyan] {jql}")
-                worklogs = jira_service.get_worklogs_from_jql(jql)
+                worklogs = jira_service.get_worklogs_from_jql(
+                    jql,
+                    include_all_issues=not issues_only,
+                    filter_by_current_user=not all_users,
+                    time_range=time_range.lower() if time_range else None
+                )
             
-            if not worklogs:
+            if not worklogs and issues_only:
                 console.print("[yellow]No worklogs found to export.[/yellow]")
-                if filter:
-                    console.print(f"[dim]Check if filter {filter} exists and contains issues with worklogs.[/dim]")
+                if filter_ids:
+                    filter_id_list = [fid.strip() for fid in filter_ids.split(',') if fid.strip()]
+                    console.print(f"[dim]Check if filter(s) {', '.join(filter_id_list)} exist and contain issues with worklogs.[/dim]")
                 else:
                     console.print("[dim]Check your JQL query and ensure issues have worklogs.[/dim]")
                 raise click.Abort()
             
-            # Get issues info for worklogs
+            # Get issues from the same source for hierarchy grouping
+            if filter_ids:
+                # Parse comma-separated filter IDs
+                filter_id_list = [fid.strip() for fid in filter_ids.split(',') if fid.strip()]
+                filter_service = FilterService(jira_service.auth)
+                combined_jql = filter_service.combine_filters_jql(filter_id_list)
+                if combined_jql:
+                    all_issues = jira_service.get_issues_from_jql(combined_jql)
+                else:
+                    all_issues = []
+            else:
+                all_issues = jira_service.get_issues_from_jql(jql) if jql else []
+            
+            # Get issues info for worklogs (if not already fetched)
             issue_keys = list(set([wl.issue_key for wl in worklogs]))
             issues_dict = {}
             
-            for issue_key in issue_keys:
-                try:
-                    issue_data = jira_service.get_issue_details(issue_key)
-                    if issue_data:
-                        fields = issue_data.get('fields', {})
-                        issue_type = fields.get('issuetype', {}).get('name', 'Unknown')
-                        summary = fields.get('summary', '')
-                        issues_dict[issue_key] = (summary, issue_type)
-                    else:
-                        issues_dict[issue_key] = ("", "")
-                except Exception:
-                    issues_dict[issue_key] = ("", "")
+            # Build issues_dict from fetched issues if available
+            # Use issue key as fallback title if summary is empty
+            for issue in all_issues:
+                summary = issue.summary or issue.key  # Use issue key as title if summary is empty
+                issues_dict[issue.key] = (summary, issue.issue_type)
             
-            # Export to Excel
-            success = excel_service.export_worklog_summary(worklogs, issues_dict, output)
+            # Fetch any missing issues
+            for issue_key in issue_keys:
+                if issue_key not in issues_dict:
+                    try:
+                        issue_data = jira_service.get_issue_details(issue_key)
+                        if issue_data:
+                            fields = issue_data.get('fields', {})
+                            issue_type = fields.get('issuetype', {}).get('name', 'Unknown')
+                            summary = fields.get('summary', '') or issue_key  # Use issue key as title if summary is empty
+                            issues_dict[issue_key] = (summary, issue_type)
+                        else:
+                            issues_dict[issue_key] = (issue_key, "")  # Use issue key as fallback
+                    except Exception:
+                        issues_dict[issue_key] = (issue_key, "")  # Use issue key as fallback
+            
+            # Group by hierarchy if requested
+            if group_by_hierarchy and all_issues:
+                hierarchical_groups = HierarchyService.group_by_hierarchy(all_issues, worklogs)
+                sorted_groups = HierarchyService.get_hierarchical_list(hierarchical_groups)
+                
+                if verbose:
+                    console.print(f"\n[cyan]Grouped {len(all_issues)} issues into {len(hierarchical_groups)} hierarchical group(s)[/cyan]")
+                    for epic_key, group in sorted_groups[:5]:  # Show first 5
+                        epic_name = (group.epic.summary or group.epic.key) if group.epic else "Orphan Issues"  # Use issue key as fallback
+                        console.print(f"  • {epic_name}: {len(group.stories_tasks)} stories/tasks, {sum(len(s) for s in group.subtasks_map.values())} subtasks")
+                    if len(sorted_groups) > 5:
+                        console.print(f"  ... and {len(sorted_groups) - 5} more group(s)")
+            else:
+                hierarchical_groups = None
+                sorted_groups = None
+            
+            # Calculate sum of worklogs for current user
+            total_hours = Decimal("0")
+            issues_with_time = 0
+            issues_without_time = 0
+            
+            for wl in worklogs:
+                if wl.time_spent_hours > 0:
+                    total_hours += wl.time_spent_hours
+                    issues_with_time += 1
+                else:
+                    issues_without_time += 1
+            
+            # Export to Excel with optional hierarchy grouping
+            success = excel_service.export_worklog_summary(
+                worklogs, 
+                issues_dict, 
+                output,
+                hierarchical_groups=sorted_groups if group_by_hierarchy else None,
+                all_issues=all_issues if group_by_hierarchy else None
+            )
             
             if success:
+                summary_info = [
+                    f"[green]✓[/green] Worklog summary export completed!\n",
+                    f"File: [cyan]{output}[/cyan]",
+                    f"Total entries: [green]{len(worklogs)}[/green]",
+                    f"  • Issues with worklogs: [cyan]{issues_with_time}[/cyan]",
+                    f"  • Issues without worklogs (0 time): [yellow]{issues_without_time}[/yellow]",
+                    f"Total time logged: [green]{float(total_hours):.2f} hours[/green]",
+                ]
+                
+                if time_range:
+                    summary_info.append(f"Time range: [cyan]{time_range} month[/cyan]")
+                if not all_users:
+                    summary_info.append(f"User filter: [cyan]Current user only[/cyan]")
+                
+                summary_info.extend([
+                    "",
+                    "[yellow]Next steps:[/yellow]",
+                    f"1. Open {output} in Excel",
+                    f"2. Edit 'Time Logged (hours)' column to change time (original values preserved in gray)",
+                    f"3. Edit 'Comment' column to change comments (original values preserved in gray)",
+                    f"4. Save the Excel file",
+                    f"5. Run: [cyan]python -m src.main worklog-summary --input {output}[/cyan]"
+                ])
+                
                 console.print(Panel(
-                    f"[green]✓[/green] Worklog summary export completed!\n\n"
-                    f"File: [cyan]{output}[/cyan]\n"
-                    f"Worklogs: [green]{len(worklogs)}[/green]\n\n"
-                    f"[yellow]Next steps:[/yellow]\n"
-                    f"1. Open {output} in Excel\n"
-                    f"2. Edit 'Time Logged (hours)' column to change time (original values preserved in gray)\n"
-                    f"3. Edit 'Comment' column to change comments (original values preserved in gray)\n"
-                    f"4. Save the Excel file\n"
-                    f"5. Run: [cyan]python -m src.main worklog-summary --input {output}[/cyan]",
+                    "\n".join(summary_info),
                     title="Export Success",
                     border_style="green"
                 ))

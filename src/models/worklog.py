@@ -89,13 +89,24 @@ class ExistingWorkLog(BaseModel):
     started: datetime = Field(..., description="Work log start time")
     author: Optional[str] = Field(None, description="Work log author")
     
-    def to_excel_row(self, issue_summary: str = "", issue_type: str = "") -> dict:
-        """Convert to Excel row format with original values tracked."""
+    def to_excel_row(self, issue_summary: str = "", issue_type: str = "", parent_issue_key: str = "", parent_issue_type: str = "", hierarchy_number: str = "") -> dict:
+        """Convert to Excel row format with original values tracked.
+        
+        Args:
+            issue_summary: Issue summary text
+            issue_type: Issue type (Epic, Story, Task, Subtask)
+            parent_issue_key: Parent issue key (Epic, Story, or Task)
+            parent_issue_type: Parent issue type (Epic, Story, Task)
+            hierarchy_number: Hierarchical number (e.g., "1", "1.1", "1.1.1")
+        """
         return {
+            "Hierarchy Number": hierarchy_number,
             "Worklog ID": self.worklog_id,
             "Issue Key": self.issue_key,
             "Summary": issue_summary,
             "Type": issue_type,
+            "Parent Issue Key": parent_issue_key,
+            "Parent Issue Type": parent_issue_type,
             "Time Logged (hours)": str(self.time_spent_hours),
             "Original Time (hours)": str(self.time_spent_hours),  # Track original
             "Date": self.started.date() if self.started else "",
@@ -104,6 +115,26 @@ class ExistingWorkLog(BaseModel):
             "Author": self.author or "",
             "Status": "Original"
         }
+    
+    @classmethod
+    def create_empty(cls, issue_key: str) -> 'ExistingWorkLog':
+        """Create an empty worklog entry for issues with no worklogs.
+        
+        Args:
+            issue_key: Jira issue key
+            
+        Returns:
+            ExistingWorkLog with zero time and empty fields
+        """
+        return cls(
+            worklog_id="",  # Empty for new worklogs
+            issue_key=issue_key,
+            time_spent_seconds=0,
+            time_spent_hours=Decimal("0"),
+            comment="",
+            started=datetime.now(),
+            author=None
+        )
 
 
 class WorkLogUpdate(BaseModel):

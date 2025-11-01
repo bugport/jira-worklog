@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     jira_verify_ssl: bool = os.getenv('JIRA_VERIFY_SSL', 'true').lower() in ('true', '1', 'yes', 'on')
     jira_api_path: Optional[str] = os.getenv('JIRA_API_PATH', None)  # e.g., '/rest/api/latest'
     jira_api_version: Optional[str] = os.getenv('JIRA_API_VERSION', None)  # e.g., '1.0', '2', '3', 'latest'
+    jira_use_bearer_token: bool = os.getenv('JIRA_USE_BEARER_TOKEN', 'false').lower() in ('true', '1', 'yes', 'on')  # Use Bearer token auth instead of Basic Auth
+    jira_rate_limit: float = float(os.getenv('JIRA_RATE_LIMIT', '5.0'))  # Requests per second (default: 5.0)
     
     model_config = SettingsConfigDict(
         env_file=".env",

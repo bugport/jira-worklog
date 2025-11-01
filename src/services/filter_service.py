@@ -5,7 +5,7 @@ import requests
 from rich.console import Console
 from rich.table import Table
 
-from ..config.auth import JiraAuth
+from ..config.auth import JiraAuth, extract_jira_error_payload, safe_parse_response
 
 console = Console()
 
@@ -43,6 +43,11 @@ class FilterService:
             ]
         except requests.exceptions.RequestException as e:
             console.print(f"[red]Error listing filters:[/red] {str(e)}")
+            if hasattr(e, 'response') and e.response is not None:
+                error_payload = extract_jira_error_payload(e.response)
+                if error_payload['formatted']:
+                    console.print(f"[yellow]Error details:[/yellow]\n{error_payload['formatted']}")
+                console.print(f"[dim]Full error payload:[/dim] {error_payload['json_pretty'][:500]}")
             return []
         except Exception as e:
             console.print(f"[red]Unexpected error listing filters:[/red] {str(e)}")
@@ -68,17 +73,78 @@ class FilterService:
             # If not in favorites, fetch filter details directly
             try:
                 response = self.auth._make_request('GET', f'/filter/{filter_id}')
-                filter_data = response.json()
+                filter_data = safe_parse_response(response)
+                if filter_data.get('is_html'):
+                    console.print(f"[yellow]Warning:[/yellow] Received HTML response from /filter/{filter_id} endpoint")
+                    return None
                 return filter_data.get('jql', None)
             except requests.exceptions.RequestException:
                 return None
                 
         except requests.exceptions.RequestException as e:
             console.print(f"[red]Error getting filter JQL:[/red] {str(e)}")
+            if hasattr(e, 'response') and e.response is not None:
+                error_payload = extract_jira_error_payload(e.response)
+                if error_payload['formatted']:
+                    console.print(f"[yellow]Error details:[/yellow]\n{error_payload['formatted']}")
+                console.print(f"[dim]Full error payload:[/dim] {error_payload['json_pretty'][:500]}")
             return None
         except Exception as e:
             console.print(f"[red]Unexpected error getting filter JQL:[/red] {str(e)}")
             return None
+    
+    def combine_filters_jql(self, filter_ids: List[str]) -> Optional[str]:
+        """Combine multiple filter JQL queries using OR operator.
+        
+        Args:
+            filter_ids: List of Jira filter IDs
+            
+        Returns:
+            Combined JQL query string or None if all filters failed
+        """
+        import re
+        
+        jql_queries = []
+        order_by_clauses = []
+        
+        for filter_id in filter_ids:
+            jql = self.get_filter_jql(filter_id)
+            if jql:
+                # Extract ORDER BY clause if present (case-insensitive)
+                # ORDER BY must come after all conditions, so we match it at the end
+                order_by_pattern = r'\s+ORDER\s+BY\s+[^\s]+(?:\s+[A-Z]+)?(?:\s*,\s*[^\s]+(?:\s+[A-Z]+)?)*'
+                order_by_match = re.search(order_by_pattern, jql, re.IGNORECASE)
+                
+                if order_by_match:
+                    # Extract ORDER BY clause
+                    order_by_clause = order_by_match.group(0).strip()
+                    order_by_clauses.append(order_by_clause)
+                    # Remove ORDER BY from JQL for combining
+                    jql_without_order = jql[:order_by_match.start()].strip()
+                else:
+                    jql_without_order = jql.strip()
+                
+                # Wrap cleaned JQL in parentheses for proper OR combination
+                jql_queries.append(f"({jql_without_order})")
+            else:
+                console.print(f"[yellow]Warning:[/yellow] Filter {filter_id} not found or has no JQL query")
+        
+        if not jql_queries:
+            console.print("[red]No valid filters found to combine.[/red]")
+            return None
+        
+        # Combine with OR operator
+        combined_jql = " OR ".join(jql_queries)
+        
+        # Add ORDER BY clause at the end if any filter had one
+        # Use the first ORDER BY clause found (if multiple filters have ORDER BY, use the first)
+        if order_by_clauses:
+            # Remove any trailing whitespace before adding ORDER BY
+            combined_jql = combined_jql.rstrip()
+            # Use the first ORDER BY clause (most common case)
+            combined_jql = f"{combined_jql} {order_by_clauses[0]}"
+        
+        return combined_jql
     
     def display_filters(self):
         """Display all filters in a formatted table."""

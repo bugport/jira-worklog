@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     jira_email: str = os.getenv('JIRA_EMAIL', '')
     jira_api_token: str = os.getenv('JIRA_API_TOKEN', '')
     jira_project: Optional[str] = os.getenv('JIRA_PROJECT', None)
+    jira_verify_ssl: bool = os.getenv('JIRA_VERIFY_SSL', 'true').lower() in ('true', '1', 'yes', 'on')
     
     model_config = SettingsConfigDict(
         env_file=".env",

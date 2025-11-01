@@ -68,6 +68,10 @@ cp .env.example .env
 JIRA_SERVER=https://your-domain.atlassian.net
 JIRA_EMAIL=your-email@example.com
 JIRA_API_TOKEN=your-api-token
+
+# Optional: Bypass SSL verification (for self-signed certificates)
+# WARNING: Only use in development/testing environments
+JIRA_VERIFY_SSL=false
 ```
 
 ### Getting Your API Token

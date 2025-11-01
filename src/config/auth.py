@@ -1,6 +1,7 @@
 """Jira authentication using Personal Access Token."""
 
 import base64
+import urllib3
 from typing import Optional
 from jira import JIRA
 from jira.exceptions import JIRAError
@@ -43,9 +44,17 @@ class JiraAuth:
                 )
             
             try:
+                # Configure SSL verification based on settings
+                options = {}
+                if not self.settings.jira_verify_ssl:
+                    options['verify'] = False
+                    # Suppress SSL warnings when verification is disabled
+                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                
                 self._client = JIRA(
                     server=self.settings.jira_url,
-                    basic_auth=(self.settings.jira_email, self.settings.jira_api_token)
+                    basic_auth=(self.settings.jira_email, self.settings.jira_api_token),
+                    options=options
                 )
             except JIRAError as e:
                 raise ValueError(f"Failed to connect to Jira: {str(e)}")

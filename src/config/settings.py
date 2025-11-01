@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     jira_project: Optional[str] = os.getenv('JIRA_PROJECT', None)
     jira_verify_ssl: bool = os.getenv('JIRA_VERIFY_SSL', 'true').lower() in ('true', '1', 'yes', 'on')
     jira_api_path: Optional[str] = os.getenv('JIRA_API_PATH', None)  # e.g., '/rest/api/latest'
+    jira_api_version: Optional[str] = os.getenv('JIRA_API_VERSION', None)  # e.g., '1.0', '2', '3', 'latest'
     
     model_config = SettingsConfigDict(
         env_file=".env",

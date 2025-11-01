@@ -73,21 +73,32 @@ JIRA_API_TOKEN=your-api-token
 # WARNING: Only use in development/testing environments
 JIRA_VERIFY_SSL=false
 
+# Optional: JIRA API version (default: auto-detected)
+# Specify the API version to use (e.g., '1.0', '2', '3', 'latest')
+# If set, this takes precedence over JIRA_API_PATH
+# Example: JIRA_API_VERSION=1.0 (will use /rest/api/1.0)
+JIRA_API_VERSION=1.0
+
 # Optional: Custom JIRA API path (default: auto-detected)
 # Set if your JIRA API is located at a custom path
 # You can specify either '/rest/api/latest' or '/api/latest'
 # (The library automatically adds '/rest', so '/rest' prefix will be removed if present)
+# If JIRA_API_VERSION is set, this option is ignored
 # Example: If your API is at https://baseurl/rest/api/latest:
 #   JIRA_SERVER=https://baseurl
 #   JIRA_API_PATH=/rest/api/latest
 JIRA_API_PATH=/rest/api/latest
 ```
 
-**Note**: If your JIRA API is located at `https://baseurl/rest/api/latest`, set:
-- `JIRA_SERVER=https://baseurl` (base URL without the API path)
-- `JIRA_API_PATH=/rest/api/latest` or `/api/latest` (the library will handle the conversion)
-
+**Note**: 
+- **To use API version 1.0**: Set `JIRA_API_VERSION=1.0` (this will use `/rest/api/1.0`)
+- **If your JIRA API is located at `https://baseurl/rest/api/latest`**: 
+  - Set `JIRA_SERVER=https://baseurl` (base URL without the API path)
+  - Set `JIRA_API_PATH=/rest/api/latest` or `/api/latest` (the library will handle the conversion)
+  
 The JIRA library automatically adds `/rest` prefix, so if you specify `/rest/api/latest`, it will be converted to `/api/latest` to avoid the duplicate `/rest//rest` issue.
+
+**Priority**: If `JIRA_API_VERSION` is set, it takes precedence over `JIRA_API_PATH`.
 
 ### Getting Your API Token
 
@@ -106,6 +117,9 @@ jira-worklog --help
 # Test connection
 jira-worklog test
 
+# Check REST API specification compatibility
+jira-worklog check-spec
+
 # List available filters
 jira-worklog filters
 ```
@@ -114,6 +128,7 @@ Or use the Python module approach:
 
 ```bash
 python -m src.main test
+python -m src.main check-spec
 python -m src.main filters
 ```
 
@@ -199,6 +214,25 @@ Test connection to Jira server.
 ```bash
 python -m src.main test
 ```
+
+### `check-spec`
+Check REST API specification compatibility with your JIRA server.
+
+Verifies that the configured API version and path are compatible with the server.
+Displays server information, API path, version, and compatibility status.
+
+```bash
+python -m src.main check-spec
+```
+
+This command will:
+- Test the connection with the configured API version/path
+- Display server version information
+- Show the API path being used
+- Indicate compatibility status
+- Provide troubleshooting suggestions if compatibility issues are detected
+
+**Use this command** to verify your `JIRA_API_VERSION` or `JIRA_API_PATH` configuration is correct.
 
 ### `filters`
 List all available Jira filters.

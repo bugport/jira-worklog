@@ -53,6 +53,7 @@ def cli(ctx: click.Context):
             "Manage Jira work logs with Excel integration.\n\n"
             "[yellow]Available Commands:[/yellow]\n"
             "  test             - Test connection to Jira server\n"
+            "  check-spec       - Check REST API specification compatibility\n"
             "  filters          - List available Jira filters\n"
             "  export           - Export issues to Excel template\n"
             "  import           - Import work logs from Excel to Jira\n"
@@ -92,6 +93,91 @@ def test():
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
         console.print("[yellow]Please check your .env file configuration.[/yellow]")
+        raise click.Abort()
+
+
+@cli.command()
+def check_spec():
+    """Check REST API specification compatibility.
+    
+    Checks if the configured API version and path are compatible with the JIRA server.
+    Displays server information and API compatibility status.
+    
+    Examples:
+    
+    \b
+    Check REST spec compatibility:
+    $ python -m src.main check-spec
+    """
+    try:
+        from rich.table import Table
+        
+        auth = JiraAuth()
+        compat_info = auth.check_rest_spec_compatibility()
+        
+        # Create compatibility table
+        table = Table(title="REST API Specification Compatibility", show_header=True, header_style="bold cyan")
+        table.add_column("Property", style="cyan")
+        table.add_column("Value", style="yellow")
+        
+        table.add_row("Base URL", compat_info.get('base_url', 'N/A'))
+        
+        api_path = compat_info.get('api_path', 'Auto-detected')
+        if api_path:
+            table.add_row("API Path", f"/rest{api_path}")
+        else:
+            table.add_row("API Path", "Auto-detected")
+        
+        if compat_info.get('api_version'):
+            table.add_row("API Version", compat_info.get('api_version'))
+        else:
+            table.add_row("API Version", "Not specified")
+        
+        server_version = compat_info.get('server_version', 'N/A')
+        table.add_row("JIRA Server Version", server_version)
+        
+        compatible = compat_info.get('compatible', False)
+        status = "[green]✓ Compatible[/green]" if compatible else "[red]✗ Not Compatible[/red]"
+        table.add_row("Status", status)
+        
+        console.print(table)
+        console.print()
+        
+        if compat_info.get('error'):
+            console.print(Panel(
+                f"[red]Error:[/red] {compat_info.get('error')}\n\n"
+                f"This may indicate:\n"
+                f"• API version mismatch\n"
+                f"• API path is incorrect\n"
+                f"• Server doesn't support the specified API version\n"
+                f"• Network connectivity issues\n\n"
+                f"Try adjusting:\n"
+                f"• JIRA_API_VERSION in .env file\n"
+                f"• JIRA_API_PATH in .env file",
+                title="Compatibility Check Failed",
+                border_style="red"
+            ))
+        elif compatible:
+            console.print(Panel(
+                f"[green]✓[/green] REST API specification is compatible!\n\n"
+                f"Server Version: {server_version}\n"
+                f"API Path: /rest{api_path or '(auto-detected)'}\n"
+                f"Base URL: {compat_info.get('base_url')}",
+                title="Compatibility Check Success",
+                border_style="green"
+            ))
+        else:
+            console.print(Panel(
+                f"[yellow]⚠[/yellow] Compatibility status unknown.\n\n"
+                f"Unable to verify API compatibility.\n"
+                f"Please check your configuration.",
+                title="Compatibility Check Warning",
+                border_style="yellow"
+            ))
+            
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        console.print("[yellow]Please check your Jira connection and configuration.[/yellow]")
         raise click.Abort()
 
 

@@ -54,7 +54,11 @@ class JiraAuth:
                 # Configure custom API path if specified
                 # Note: JIRA library automatically adds '/rest' prefix, so rest_path should be the path after '/rest'
                 # Example: If API is at /rest/api/latest, rest_path should be /api/latest
-                if self.settings.jira_api_path:
+                if self.settings.jira_api_version:
+                    # If API version is specified, use it to construct the path
+                    version = self.settings.jira_api_version.strip()
+                    options['rest_path'] = f'/api/{version}'
+                elif self.settings.jira_api_path:
                     api_path = self.settings.jira_api_path.rstrip('/')
                     # Remove leading '/rest' if present to avoid duplicate
                     if api_path.startswith('/rest'):
@@ -108,6 +112,67 @@ class JiraAuth:
                 border_style="red"
             ))
             return False
+    
+    def check_rest_spec_compatibility(self) -> dict:
+        """Check REST API specification compatibility.
+        
+        Returns:
+            Dictionary with compatibility information including:
+            - api_version: Detected API version
+            - server_version: JIRA server version
+            - base_url: Base URL used
+            - api_path: API path used
+            - compatible: Boolean indicating if connection is successful
+            - error: Error message if any
+        """
+        result = {
+            'api_version': None,
+            'server_version': None,
+            'base_url': self.settings.jira_url,
+            'api_path': None,
+            'compatible': False,
+            'error': None
+        }
+        
+        try:
+            client = self.client
+            
+            # Get API path from client if available
+            if hasattr(client, '_options') and 'rest_path' in client._options:
+                result['api_path'] = client._options.get('rest_path')
+            elif self.settings.jira_api_version:
+                result['api_path'] = f'/api/{self.settings.jira_api_version}'
+            elif self.settings.jira_api_path:
+                api_path = self.settings.jira_api_path.rstrip('/')
+                if api_path.startswith('/rest'):
+                    api_path = api_path[5:]
+                result['api_path'] = api_path if api_path.startswith('/') else f'/{api_path}'
+            
+            # Try to get server info to check compatibility
+            try:
+                server_info = client.server_info()
+                
+                result['compatible'] = True
+                result['server_version'] = server_info.get('version', 'Unknown')
+                result['baseUrl'] = server_info.get('baseUrl', self.settings.jira_url)
+                
+                # Extract API version from the actual URL used
+                if hasattr(client, '_options') and 'rest_path' in client._options:
+                    rest_path = client._options.get('rest_path', '')
+                    # Extract version from path like /api/1.0 or /api/latest
+                    if '/api/' in rest_path:
+                        version_part = rest_path.split('/api/')[-1]
+                        result['api_version'] = version_part
+                
+            except Exception as e:
+                result['error'] = str(e)
+                result['compatible'] = False
+                
+        except Exception as e:
+            result['error'] = str(e)
+            result['compatible'] = False
+        
+        return result
     
     def close(self):
         """Close Jira client connection."""

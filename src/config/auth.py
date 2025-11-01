@@ -51,68 +51,35 @@ class JiraAuth:
                     # Suppress SSL warnings when verification is disabled
                     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 
-                # Configure custom API path if specified
-                # Note: JIRA library automatically adds '/rest' prefix, so rest_path should be the path after '/rest'
-                # IMPORTANT: rest_path should NOT start with '/' to avoid '/rest//api' duplication
-                # The library may append version numbers after rest_path, so we need to construct it carefully
-                # Example: If API is at /rest/api/latest, rest_path should be 'api/latest' (without leading /)
+                # Configure API version using the correct parameter
+                # According to JIRA library docs, use 'rest_api_version' parameter, not 'rest_path'
+                # This properly sets the API version (e.g., '1.0', '2', '3', 'latest')
                 if self.settings.jira_api_version:
-                    # If API version is specified, use it to construct the path
+                    # Use rest_api_version parameter - this is the correct way per library docs
                     version = self.settings.jira_api_version.strip()
-                    # rest_path should NOT start with '/' - library adds '/rest' and '/' automatically
-                    options['rest_path'] = f'api/{version}'
+                    options['rest_api_version'] = version
                 elif self.settings.jira_api_path:
+                    # If API path is specified instead of version, extract version from path
                     api_path = self.settings.jira_api_path.rstrip('/')
-                    # Remove leading '/rest' if present to avoid duplicate
-                    if api_path.startswith('/rest'):
-                        api_path = api_path[5:]  # Remove '/rest' prefix
-                    # Remove leading '/' to avoid '/rest//api' duplication
-                    if api_path.startswith('/'):
-                        api_path = api_path[1:]
-                    # Ensure path doesn't start with '/' (library adds it)
-                    options['rest_path'] = api_path
+                    # Extract version from path like /rest/api/1.0 or /rest/api/latest
+                    if '/api/' in api_path:
+                        version = api_path.split('/api/')[-1]
+                        options['rest_api_version'] = version
+                    else:
+                        # Fallback to rest_path if version cannot be extracted
+                        if api_path.startswith('/rest'):
+                            api_path = api_path[5:]
+                        if api_path.startswith('/'):
+                            api_path = api_path[1:]
+                        options['rest_path'] = api_path
                 
+                # Initialize JIRA client with rest_api_version parameter
+                # This is the correct way to specify API version per library documentation
                 self._client = JIRA(
                     server=self.settings.jira_url,
                     basic_auth=(self.settings.jira_email, self.settings.jira_api_token),
                     options=options if options else None
                 )
-                
-                # If API version is specified and library is appending wrong version,
-                # patch the _get_url method to use correct path
-                if self.settings.jira_api_version:
-                    version = self.settings.jira_api_version.strip()
-                    
-                    # Patch _get_url to replace default API version with configured version
-                    if hasattr(self._client, '_get_url'):
-                        original_get_url = self._client._get_url
-                        
-                        def patched_get_url(path='', params=None, base=None):
-                            # Replace any occurrence of /2/ or /2/ in path with configured version
-                            if path:
-                                # Replace /2/ with /{version}/
-                                path = path.replace('/2/', f'/{version}/')
-                                # Replace leading '2/' with '{version}/'
-                                if path.startswith('2/'):
-                                    path = path.replace('2/', f'{version}/', 1)
-                                # Replace trailing '/2' (before query params)
-                                if path.endswith('/2'):
-                                    path = path[:-2] + f'/{version}'
-                                # Handle '2/serverInfo' pattern
-                                if '/2/' not in path and path.count(version) == 0:
-                                    if path.startswith('2/'):
-                                        path = f'{version}/' + path[2:]
-                            return original_get_url(path, params, base)
-                        
-                        self._client._get_url = patched_get_url
-                    
-                    # Also patch _options to ensure rest_path is correctly set
-                    if hasattr(self._client, '_options'):
-                        # Make sure rest_path uses the configured version
-                        if 'rest_path' in self._client._options:
-                            current_rest_path = self._client._options['rest_path']
-                            if '/2/' in current_rest_path or current_rest_path.endswith('/2'):
-                                self._client._options['rest_path'] = current_rest_path.replace('/2/', f'/{version}/').replace('/2', f'/{version}')
             except JIRAError as e:
                 raise ValueError(f"Failed to connect to Jira: {str(e)}")
         
@@ -177,19 +144,31 @@ class JiraAuth:
         try:
             client = self.client
             
-            # Get API path from client if available
-            if hasattr(client, '_options') and 'rest_path' in client._options:
-                rest_path = client._options.get('rest_path', '')
-                # rest_path doesn't include leading /, so we add it for display
-                result['api_path'] = f'/{rest_path}' if rest_path else None
+            # Get API version from client options
+            if hasattr(client, '_options'):
+                if 'rest_api_version' in client._options:
+                    version = client._options.get('rest_api_version', '')
+                    result['api_version'] = version
+                    result['api_path'] = f'/api/{version}'
+                elif 'rest_path' in client._options:
+                    # Fallback for rest_path if rest_api_version is not available
+                    rest_path = client._options.get('rest_path', '')
+                    result['api_path'] = f'/{rest_path}' if rest_path else None
+                    if 'api/' in rest_path:
+                        version_part = rest_path.split('api/')[-1]
+                        result['api_version'] = version_part
             elif self.settings.jira_api_version:
                 version = self.settings.jira_api_version.strip()
+                result['api_version'] = version
                 result['api_path'] = f'/api/{version}'
             elif self.settings.jira_api_path:
                 api_path = self.settings.jira_api_path.rstrip('/')
                 if api_path.startswith('/rest'):
                     api_path = api_path[5:]
                 result['api_path'] = f'/{api_path}' if not api_path.startswith('/') else api_path
+                if '/api/' in api_path:
+                    version_part = api_path.split('/api/')[-1]
+                    result['api_version'] = version_part
             
             # Try to get server info to check compatibility
             try:
@@ -199,18 +178,10 @@ class JiraAuth:
                 result['server_version'] = server_info.get('version', 'Unknown')
                 result['baseUrl'] = server_info.get('baseUrl', self.settings.jira_url)
                 
-                # Extract API version from the actual URL used
-                if hasattr(client, '_options') and 'rest_path' in client._options:
-                    rest_path = client._options.get('rest_path', '')
-                    # rest_path is like 'api/1.0' or 'api/latest' (without leading /)
-                    # Extract version from path
-                    if 'api/' in rest_path:
-                        version_part = rest_path.split('api/')[-1]
-                        result['api_version'] = version_part
-                    elif '/' in rest_path:
-                        # If no 'api/' prefix, take the last part
-                        version_part = rest_path.split('/')[-1]
-                        result['api_version'] = version_part
+                # Extract API version from options if not already set
+                if not result['api_version'] and hasattr(client, '_options'):
+                    if 'rest_api_version' in client._options:
+                        result['api_version'] = client._options.get('rest_api_version')
                 
             except Exception as e:
                 result['error'] = str(e)

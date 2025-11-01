@@ -1,16 +1,87 @@
 """Jira authentication using Personal Access Token with requests library."""
 
 import base64
+import json
 import urllib3
-from typing import Optional
+from typing import Optional, Dict, Any
 import requests
 from requests.auth import HTTPBasicAuth
 from rich.console import Console
 from rich.panel import Panel
+from rich.syntax import Syntax
 
 from .settings import Settings, get_settings
 
 console = Console()
+
+
+def extract_jira_error_payload(response: requests.Response) -> Dict[str, Any]:
+    """Extract error payload from JIRA REST API response.
+    
+    JIRA REST API returns errors in the following format:
+    {
+        "errorMessages": ["Error message 1", "Error message 2"],
+        "errors": {
+            "field1": "Field-specific error",
+            "field2": "Another field error"
+        }
+    }
+    
+    Args:
+        response: requests.Response object with error status
+        
+    Returns:
+        Dictionary with error information:
+        - raw: Raw JSON payload
+        - errorMessages: List of error messages
+        - errors: Dictionary of field-specific errors
+        - formatted: Formatted string representation
+        - json_pretty: Pretty-printed JSON string
+    """
+    result = {
+        'raw': None,
+        'errorMessages': [],
+        'errors': {},
+        'formatted': '',
+        'json_pretty': ''
+    }
+    
+    try:
+        error_data = response.json()
+        result['raw'] = error_data
+        result['errorMessages'] = error_data.get('errorMessages', [])
+        result['errors'] = error_data.get('errors', {})
+        
+        # Format error messages
+        formatted_parts = []
+        
+        if result['errorMessages']:
+            formatted_parts.append("Error Messages:")
+            for msg in result['errorMessages']:
+                formatted_parts.append(f"  • {msg}")
+        
+        if result['errors']:
+            if formatted_parts:
+                formatted_parts.append("")
+            formatted_parts.append("Field Errors:")
+            for field, error in result['errors'].items():
+                formatted_parts.append(f"  • {field}: {error}")
+        
+        result['formatted'] = '\n'.join(formatted_parts) if formatted_parts else "No error details available"
+        
+        # Pretty print JSON
+        result['json_pretty'] = json.dumps(error_data, indent=2)
+        
+    except (ValueError, json.JSONDecodeError):
+        # Not JSON, use raw text
+        result['raw'] = {'text': response.text}
+        result['formatted'] = f"Raw response: {response.text[:500]}"
+        result['json_pretty'] = response.text[:500]
+    except Exception:
+        result['formatted'] = "Unable to parse error response"
+        result['json_pretty'] = response.text[:500] if response.text else "Empty response"
+    
+    return result
 
 
 class JiraAuth:
@@ -94,25 +165,25 @@ class JiraAuth:
         url = f"{self.base_url}{endpoint}"
         response = self.session.request(method, url, **kwargs)
         
-        # Handle 401 errors with detailed message
+        # Handle 401 errors with detailed message and full error payload
         if response.status_code == 401:
-            error_msg = "Authentication failed (401 Unauthorized)"
-            try:
-                error_data = response.json()
-                if error_data.get('errorMessages'):
-                    error_msg = ', '.join(error_data['errorMessages'])
-                elif error_data.get('errors'):
-                    error_msg = str(error_data['errors'])
-            except:
-                if response.text:
-                    error_msg += f": {response.text[:200]}"
+            error_payload = extract_jira_error_payload(response)
+            error_msg = error_payload['formatted'] or "Authentication failed (401 Unauthorized)"
             
-            # Create a more informative exception
+            # Create a more informative exception with full payload
             http_error = requests.exceptions.HTTPError(
-                f"401 Client Error: Unauthorized for url: {url}\n{error_msg}",
+                f"401 Client Error: Unauthorized for url: {url}\n\n{error_payload['json_pretty']}",
                 response=response
             )
+            # Attach error payload to exception for easier access
+            http_error.error_payload = error_payload
             raise http_error
+        
+        # Handle other error status codes with full error payload
+        if not response.ok:
+            error_payload = extract_jira_error_payload(response)
+            # Store error payload in response for later access
+            response.error_payload = error_payload
         
         # Raise exception for other bad status codes
         response.raise_for_status()
@@ -155,17 +226,8 @@ class JiraAuth:
                 
             except requests.exceptions.HTTPError as e:
                 if e.response and e.response.status_code == 401:
-                    # Authentication failed - show detailed error
-                    error_msg = "Authentication failed (401 Unauthorized)"
-                    try:
-                        error_data = e.response.json()
-                        if error_data.get('errorMessages'):
-                            error_msg = ', '.join(error_data['errorMessages'])
-                        elif error_data.get('errors'):
-                            error_msg = str(error_data['errors'])
-                    except:
-                        if e.response.text:
-                            error_msg += f": {e.response.text[:200]}"
+                    # Get error payload from exception or extract it
+                    error_payload = getattr(e, 'error_payload', None) or extract_jira_error_payload(e.response)
                     
                     # Try to get more diagnostic info
                     debug_info = []
@@ -173,24 +235,35 @@ class JiraAuth:
                     debug_info.append(f"Using Basic Auth with email: {self.settings.jira_email}")
                     debug_info.append(f"API Token: {'*' * (len(self.settings.jira_api_token) - 4) + self.settings.jira_api_token[-4:] if len(self.settings.jira_api_token) > 4 else '***'}")
                     
+                    # Build error message with full payload
+                    error_content = [
+                        "[red]✗[/red] Authentication failed!\n",
+                        f"[yellow]Error Details:[/yellow]\n{error_payload['formatted']}\n",
+                        f"[yellow]Debug Information:[/yellow]\n",
+                        *[f"• {info}" for info in debug_info],
+                        "\n[yellow]Full Error Payload (JSON):[/yellow]",
+                        f"```json\n{error_payload['json_pretty']}\n```",
+                        "\n[yellow]Common Issues:[/yellow]",
+                        f"• JIRA_SERVER: Ensure URL is correct (no trailing slash): {self.settings.jira_url}",
+                        f"• JIRA_EMAIL: Use your email address or username",
+                        f"• JIRA_API_TOKEN: Ensure token is valid and not expired",
+                        f"• For Jira Cloud: API tokens must be used (passwords deprecated)",
+                        f"• For Jira Server/Data Center: Check if Basic Auth is enabled",
+                        f"• Some Jira instances require username instead of email",
+                        f"• Verify SSL certificate if using self-signed certs",
+                        "\nGet your API token from:",
+                        "https://id.atlassian.com/manage-profile/security/api-tokens"
+                    ]
+                    
                     console.print(Panel(
-                        f"[red]✗[/red] Authentication failed!\n\n"
-                        f"{error_msg}\n\n"
-                        f"Debug Information:\n"
-                        f"{chr(10).join('• ' + info for info in debug_info)}\n\n"
-                        f"Common Issues:\n"
-                        f"• JIRA_SERVER: Ensure URL is correct (no trailing slash): {self.settings.jira_url}\n"
-                        f"• JIRA_EMAIL: Use your email address or username\n"
-                        f"• JIRA_API_TOKEN: Ensure token is valid and not expired\n"
-                        f"• For Jira Cloud: API tokens must be used (passwords deprecated)\n"
-                        f"• For Jira Server/Data Center: Check if Basic Auth is enabled\n"
-                        f"• Some Jira instances require username instead of email\n"
-                        f"• Verify SSL certificate if using self-signed certs\n\n"
-                        f"Get your API token from:\n"
-                        f"https://id.atlassian.com/manage-profile/security/api-tokens",
+                        "\n".join(error_content),
                         title="Authentication Error (401)",
                         border_style="red"
                     ))
+                    
+                    # Print formatted JSON payload separately
+                    console.print("\n[bold yellow]Full Error Payload:[/bold yellow]")
+                    console.print(Syntax(error_payload['json_pretty'], "json", theme="monokai", line_numbers=False))
                     return False
                 else:
                     # Re-raise other HTTP errors to be handled below
@@ -199,34 +272,49 @@ class JiraAuth:
         except requests.exceptions.HTTPError as e:
             # Handle HTTP errors that weren't caught above
             status_code = e.response.status_code if hasattr(e, 'response') and e.response else 'Unknown'
-            error_msg = str(e)
             
-            # Try to get error details from response
-            if hasattr(e, 'response') and e.response:
-                try:
-                    error_data = e.response.json()
-                    if error_data.get('errorMessages'):
-                        error_msg = ', '.join(error_data['errorMessages'])
-                    elif error_data.get('errors'):
-                        error_msg = str(error_data['errors'])
-                except:
-                    error_msg = e.response.text[:200] if e.response.text else error_msg
+            # Get error payload
+            error_payload = getattr(e, 'error_payload', None)
+            if not error_payload and hasattr(e, 'response') and e.response:
+                error_payload = extract_jira_error_payload(e.response)
+            
+            # Build error message with full payload
+            error_content = [
+                f"[red]✗[/red] Connection failed! (HTTP {status_code})\n",
+                f"[yellow]Error Details:[/yellow]\n{error_payload['formatted']}\n" if error_payload else f"Error: {str(e)}\n"
+            ]
+            
+            if error_payload:
+                error_content.extend([
+                    f"[yellow]Full Error Payload (JSON):[/yellow]",
+                    f"```json\n{error_payload['json_pretty']}\n```"
+                ])
+            
+            error_content.extend([
+                "",
+                "[yellow]Please check:[/yellow]",
+                f"• JIRA_SERVER is correct (no trailing slash): {self.settings.jira_url}",
+                f"• JIRA_EMAIL is correct: {self.settings.jira_email}",
+                f"• JIRA_API_TOKEN is valid (not expired)",
+                f"• JIRA_API_VERSION is correct (if specified): {self.settings.jira_api_version or 'latest (default)'}",
+                f"• Network connectivity and firewall rules",
+                f"• JIRA_VERIFY_SSL setting if using self-signed certificates",
+                "",
+                "Get your API token from:",
+                "https://id.atlassian.com/manage-profile/security/api-tokens"
+            ])
             
             console.print(Panel(
-                f"[red]✗[/red] Connection failed! (HTTP {status_code})\n\n"
-                f"Error: {error_msg}\n\n"
-                f"Please check:\n"
-                f"• JIRA_SERVER is correct (no trailing slash): {self.settings.jira_url}\n"
-                f"• JIRA_EMAIL is correct: {self.settings.jira_email}\n"
-                f"• JIRA_API_TOKEN is valid (not expired)\n"
-                f"• JIRA_API_VERSION is correct (if specified): {self.settings.jira_api_version or 'latest (default)'}\n"
-                f"• Network connectivity and firewall rules\n"
-                f"• JIRA_VERIFY_SSL setting if using self-signed certificates\n\n"
-                f"Get your API token from:\n"
-                f"https://id.atlassian.com/manage-profile/security/api-tokens",
+                "\n".join(error_content),
                 title="Connection Error",
                 border_style="red"
             ))
+            
+            # Print formatted JSON payload separately if available
+            if error_payload:
+                console.print("\n[bold yellow]Full Error Payload:[/bold yellow]")
+                console.print(Syntax(error_payload['json_pretty'], "json", theme="monokai", line_numbers=False))
+            
             return False
         except requests.exceptions.RequestException as e:
             console.print(Panel(

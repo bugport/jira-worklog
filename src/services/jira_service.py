@@ -1,9 +1,8 @@
-"""Jira API service for issues and work logs."""
+"""Jira API service for issues and work logs using requests library."""
 
 from typing import List, Optional
 from datetime import datetime, date
-from jira import JIRA
-from jira.exceptions import JIRAError
+import requests
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -17,7 +16,7 @@ console = Console()
 
 
 class JiraService:
-    """Service for Jira API operations."""
+    """Service for Jira API operations using requests library."""
     
     def __init__(self, auth: Optional[JiraAuth] = None):
         """Initialize Jira service.
@@ -26,14 +25,6 @@ class JiraService:
             auth: Jira authentication handler (creates new if None)
         """
         self.auth = auth or JiraAuth()
-        self._client: Optional[JIRA] = None
-    
-    @property
-    def client(self) -> JIRA:
-        """Get Jira client instance."""
-        if self._client is None:
-            self._client = self.auth.client
-        return self._client
     
     def get_issues_from_filter(self, filter_id: str) -> List[Issue]:
         """Get issues from a Jira filter.
@@ -59,6 +50,23 @@ class JiraService:
             console.print(f"[red]Error getting issues from filter:[/red] {str(e)}")
             return []
     
+    def get_issue_details(self, issue_key: str) -> Optional[dict]:
+        """Get issue details by issue key.
+        
+        Args:
+            issue_key: Jira issue key
+            
+        Returns:
+            Dictionary with issue details or None if not found
+        """
+        try:
+            response = self.auth._make_request('GET', f'/issue/{issue_key}')
+            return response.json()
+        except requests.exceptions.RequestException:
+            return None
+        except Exception:
+            return None
+    
     def get_issues_from_jql(self, jql: str) -> List[Issue]:
         """Get issues from JQL query.
         
@@ -76,35 +84,70 @@ class JiraService:
             ) as progress:
                 task = progress.add_task("Fetching issues from Jira...", total=None)
                 
-                issues = self.client.search_issues(jql, maxResults=1000, expand='names')
+                # Search issues using JQL
+                response = self.auth._make_request('GET', '/search', params={
+                    'jql': jql,
+                    'maxResults': 1000,
+                    'expand': 'names'
+                })
+                
+                data = response.json()
+                issues_data = data.get('issues', [])
                 
                 progress.update(task, description="Processing issues...")
                 
                 result = []
-                for issue in issues:
-                    issue_type = issue.fields.issuetype.name if hasattr(issue.fields, 'issuetype') else "Unknown"
-                    status = issue.fields.status.name if hasattr(issue.fields, 'status') else "Unknown"
-                    project = issue.fields.project.key if hasattr(issue.fields, 'project') else None
+                for issue_data in issues_data:
+                    fields = issue_data.get('fields', {})
+                    
+                    issue_type_name = fields.get('issuetype', {}).get('name', 'Unknown')
+                    status_name = fields.get('status', {}).get('name', 'Unknown')
+                    project_key = issue_data.get('key', '').split('-')[0] if '-' in issue_data.get('key', '') else None
+                    
+                    assignee_data = fields.get('assignee')
+                    assignee_name = assignee_data.get('displayName') if assignee_data else None
+                    
+                    created_str = fields.get('created')
+                    created = None
+                    if created_str:
+                        try:
+                            created = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+                        except:
+                            pass
+                    
+                    updated_str = fields.get('updated')
+                    updated = None
+                    if updated_str:
+                        try:
+                            updated = datetime.fromisoformat(updated_str.replace('Z', '+00:00'))
+                        except:
+                            pass
                     
                     result.append(Issue(
-                        key=issue.key,
-                        summary=issue.fields.summary,
-                        issue_type=issue_type,
-                        status=status,
-                        project=project,
-                        assignee=getattr(issue.fields.assignee, 'displayName', None) if hasattr(issue.fields, 'assignee') and issue.fields.assignee else None,
-                        created=datetime.fromisoformat(issue.fields.created.replace('Z', '+00:00')) if hasattr(issue.fields, 'created') else None,
-                        updated=datetime.fromisoformat(issue.fields.updated.replace('Z', '+00:00')) if hasattr(issue.fields, 'updated') else None
+                        key=issue_data.get('key', ''),
+                        summary=fields.get('summary', ''),
+                        issue_type=issue_type_name,
+                        status=status_name,
+                        project=project_key,
+                        assignee=assignee_name,
+                        created=created,
+                        updated=updated
                     ))
                 
                 progress.update(task, description=f"[green]Found {len(result)} issue(s)[/green]")
             
             return result
             
-        except JIRAError as e:
+        except requests.exceptions.RequestException as e:
             console.print(f"[red]Jira API error:[/red] {str(e)}")
-            if "JQL" in str(e):
-                console.print("[yellow]Please check your JQL query syntax.[/yellow]")
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    error_msg = error_data.get('errorMessages', []) or error_data.get('errors', {})
+                    if error_msg:
+                        console.print(f"[yellow]Error details:[/yellow] {error_msg}")
+                except:
+                    pass
             return []
         except Exception as e:
             console.print(f"[red]Error getting issues from JQL:[/red] {str(e)}")
@@ -121,26 +164,46 @@ class JiraService:
             SyncResult with success status and message
         """
         try:
-            issue = self.client.issue(issue_key)
             worklog = worklog_entry.to_worklog()
             
+            # Format started datetime as ISO 8601 (JIRA format: YYYY-MM-DDTHH:MM:SS.000+0000)
+            if worklog.started:
+                # Ensure UTC timezone format
+                started_str = worklog.started.strftime('%Y-%m-%dT%H:%M:%S.000+0000')
+            else:
+                # Default to start of work_date at UTC
+                started = datetime.combine(worklog_entry.work_date, datetime.min.time())
+                started_str = started.strftime('%Y-%m-%dT%H:%M:%S.000+0000')
+            
+            # Prepare worklog data
+            worklog_data = {
+                'timeSpentSeconds': worklog.time_spent_seconds,
+                'comment': worklog.comment or '',
+                'started': started_str
+            }
+            
             # Create work log in Jira
-            worklog_obj = self.client.add_worklog(
-                issue=issue_key,
-                timeSpentSeconds=worklog.time_spent_seconds,
-                comment=worklog.comment,
-                started=worklog.started
-            )
+            response = self.auth._make_request('POST', f'/issue/{issue_key}/worklog', json=worklog_data)
+            worklog_result = response.json()
+            
+            worklog_id = str(worklog_result.get('id', ''))
             
             return SyncResult(
                 issue_key=issue_key,
                 success=True,
                 message=f"Work log added successfully ({worklog_entry.time_logged_hours} hours on {worklog_entry.work_date})",
-                worklog_id=str(worklog_obj.id) if hasattr(worklog_obj, 'id') else None
+                worklog_id=worklog_id
             )
             
-        except JIRAError as e:
+        except requests.exceptions.RequestException as e:
             error_msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    error_msg = ' '.join(error_data.get('errorMessages', [])) or str(error_data.get('errors', error_msg))
+                except:
+                    pass
+            
             if "Worklog" in error_msg or "already" in error_msg.lower():
                 return SyncResult(
                     issue_key=issue_key,
@@ -190,13 +253,13 @@ class JiraService:
                     try:
                         # Validate issue key exists
                         try:
-                            issue = self.client.issue(entry.issue_key)
+                            self.auth._make_request('GET', f'/issue/{entry.issue_key}')
                             results.append(SyncResult(
                                 issue_key=entry.issue_key,
                                 success=True,
                                 message=f"Validation passed ({entry.time_logged_hours}h on {entry.work_date})"
                             ))
-                        except JIRAError:
+                        except requests.exceptions.RequestException:
                             results.append(SyncResult(
                                 issue_key=entry.issue_key,
                                 success=False,
@@ -258,27 +321,55 @@ class JiraService:
             ) as progress:
                 task = progress.add_task("Fetching issues from Jira...", total=None)
                 
-                issues = self.client.search_issues(jql, maxResults=1000, expand='names')
+                # Search issues using JQL
+                response = self.auth._make_request('GET', '/search', params={
+                    'jql': jql,
+                    'maxResults': 1000,
+                    'expand': 'names'
+                })
+                
+                data = response.json()
+                issues_data = data.get('issues', [])
                 
                 progress.update(task, description="Fetching work logs...")
                 
                 worklogs = []
-                for issue in issues:
+                for issue_data in issues_data:
+                    issue_key = issue_data.get('key', '')
                     try:
-                        issue_worklogs = self.client.worklogs(issue.key)
+                        # Get worklogs for this issue
+                        worklog_response = self.auth._make_request('GET', f'/issue/{issue_key}/worklog')
+                        worklog_data = worklog_response.json()
+                        issue_worklogs = worklog_data.get('worklogs', [])
+                        
                         for wl in issue_worklogs:
-                            time_spent_hours = Decimal(str(wl.timeSpentSeconds)) / Decimal("3600")
+                            time_spent_seconds = wl.get('timeSpentSeconds', 0)
+                            time_spent_hours = Decimal(str(time_spent_seconds)) / Decimal("3600")
+                            
+                            started_str = wl.get('started')
+                            started = None
+                            if started_str:
+                                try:
+                                    started = datetime.fromisoformat(started_str.replace('Z', '+00:00'))
+                                except:
+                                    started = datetime.now()
+                            else:
+                                started = datetime.now()
+                            
+                            comment = wl.get('comment', '')
+                            author_data = wl.get('author', {})
+                            author = author_data.get('displayName') if author_data else None
                             
                             worklogs.append(ExistingWorkLog(
-                                worklog_id=str(wl.id),
-                                issue_key=issue.key,
-                                time_spent_seconds=wl.timeSpentSeconds,
+                                worklog_id=str(wl.get('id', '')),
+                                issue_key=issue_key,
+                                time_spent_seconds=time_spent_seconds,
                                 time_spent_hours=time_spent_hours,
-                                comment=getattr(wl, 'comment', None) or "",
-                                started=datetime.fromisoformat(wl.started.replace('Z', '+00:00')) if hasattr(wl, 'started') and wl.started else datetime.now(),
-                                author=getattr(wl, 'author', {}).get('displayName', None) if hasattr(wl, 'author') else None
+                                comment=comment or "",
+                                started=started,
+                                author=author
                             ))
-                    except JIRAError:
+                    except requests.exceptions.RequestException:
                         # Skip issues without worklog access
                         continue
                 
@@ -286,7 +377,7 @@ class JiraService:
             
             return worklogs
             
-        except JIRAError as e:
+        except requests.exceptions.RequestException as e:
             console.print(f"[red]Jira API error:[/red] {str(e)}")
             return []
         except Exception as e:
@@ -308,17 +399,17 @@ class JiraService:
             
             # Convert date to datetime
             started = datetime.combine(worklog_update.work_date, datetime.min.time())
+            started_str = started.strftime('%Y-%m-%dT%H:%M:%S.000+0000')
+            
+            # Prepare update data
+            worklog_data = {
+                'timeSpentSeconds': new_time_seconds,
+                'comment': worklog_update.new_comment or "",
+                'started': started_str
+            }
             
             # Update work log using Jira API
-            # Use the Jira library's worklog update method
-            worklog = self.client.worklog(worklog_update.issue_key, worklog_update.worklog_id)
-            
-            # Update work log fields
-            worklog.update(
-                timeSpent=new_time_seconds,
-                comment=worklog_update.new_comment or "",
-                started=started
-            )
+            self.auth._make_request('PUT', f'/issue/{worklog_update.issue_key}/worklog/{worklog_update.worklog_id}', json=worklog_data)
             
             return SyncResult(
                 issue_key=worklog_update.issue_key,
@@ -328,8 +419,15 @@ class JiraService:
                 operation="update"
             )
             
-        except JIRAError as e:
+        except requests.exceptions.RequestException as e:
             error_msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_data = e.response.json()
+                    error_msg = ' '.join(error_data.get('errorMessages', [])) or str(error_data.get('errors', error_msg))
+                except:
+                    pass
+            
             return SyncResult(
                 issue_key=worklog_update.issue_key,
                 worklog_id=worklog_update.worklog_id,
@@ -384,7 +482,7 @@ class JiraService:
                     try:
                         # Validate worklog exists
                         try:
-                            worklog = self.client.worklog(update.issue_key, update.worklog_id)
+                            self.auth._make_request('GET', f'/issue/{update.issue_key}/worklog/{update.worklog_id}')
                             results.append(SyncResult(
                                 issue_key=update.issue_key,
                                 worklog_id=update.worklog_id,
@@ -392,7 +490,7 @@ class JiraService:
                                 message=f"Validation passed ({update.original_time_hours}h -> {update.new_time_hours}h)",
                                 operation="update"
                             ))
-                        except JIRAError:
+                        except requests.exceptions.RequestException:
                             results.append(SyncResult(
                                 issue_key=update.issue_key,
                                 worklog_id=update.worklog_id,
@@ -416,4 +514,3 @@ class JiraService:
                 progress.advance(task)
         
         return results
-

@@ -1,19 +1,17 @@
-"""Jira filter and JQL query service."""
+"""Jira filter and JQL query service using requests library."""
 
 from typing import List, Optional
-from jira import JIRA
-from jira.exceptions import JIRAError
+import requests
 from rich.console import Console
 from rich.table import Table
 
 from ..config.auth import JiraAuth
-from ..models.issue import Issue
 
 console = Console()
 
 
 class FilterService:
-    """Service for managing Jira filters and JQL queries."""
+    """Service for managing Jira filters and JQL queries using requests library."""
     
     def __init__(self, auth: Optional[JiraAuth] = None):
         """Initialize filter service.
@@ -22,14 +20,6 @@ class FilterService:
             auth: Jira authentication handler (creates new if None)
         """
         self.auth = auth or JiraAuth()
-        self._client: Optional[JIRA] = None
-    
-    @property
-    def client(self) -> JIRA:
-        """Get Jira client instance."""
-        if self._client is None:
-            self._client = self.auth.client
-        return self._client
     
     def list_filters(self) -> List[dict]:
         """List all saved Jira filters.
@@ -38,17 +28,20 @@ class FilterService:
             List of filter dictionaries with id, name, jql keys
         """
         try:
-            filters = self.client.favourite_filters()
+            # Get favorite filters
+            response = self.auth._make_request('GET', '/filter/favourite')
+            filters_data = response.json()
+            
             return [
                 {
-                    "id": str(f.id),
-                    "name": f.name,
-                    "jql": f.jql if hasattr(f, 'jql') else "",
-                    "description": getattr(f, 'description', '')
+                    "id": str(f.get('id', '')),
+                    "name": f.get('name', ''),
+                    "jql": f.get('jql', ''),
+                    "description": f.get('description', '')
                 }
-                for f in filters
+                for f in filters_data
             ]
-        except JIRAError as e:
+        except requests.exceptions.RequestException as e:
             console.print(f"[red]Error listing filters:[/red] {str(e)}")
             return []
         except Exception as e:
@@ -65,17 +58,26 @@ class FilterService:
             JQL query string or None if not found
         """
         try:
+            # Try to get filter from favorites first
             filters = self.list_filters()
             for f in filters:
                 if f["id"] == filter_id:
                     if f["jql"]:
                         return f["jql"]
-                    # If jql not in list, fetch full filter details
-                    filter_obj = self.client.filter(filter_id)
-                    return filter_obj.jql if hasattr(filter_obj, 'jql') else None
-            return None
-        except JIRAError as e:
+            
+            # If not in favorites, fetch filter details directly
+            try:
+                response = self.auth._make_request('GET', f'/filter/{filter_id}')
+                filter_data = response.json()
+                return filter_data.get('jql', None)
+            except requests.exceptions.RequestException:
+                return None
+                
+        except requests.exceptions.RequestException as e:
             console.print(f"[red]Error getting filter JQL:[/red] {str(e)}")
+            return None
+        except Exception as e:
+            console.print(f"[red]Unexpected error getting filter JQL:[/red] {str(e)}")
             return None
     
     def display_filters(self):
@@ -98,4 +100,3 @@ class FilterService:
         
         console.print(table)
         console.print(f"\n[dim]Found {len(filters)} filter(s). Use --filter <id> to export issues.[/dim]")
-

@@ -201,10 +201,14 @@ def worklog_summary(filter: str, jql: str, output: str, input_file: str, dry_run
             
             for issue_key in issue_keys:
                 try:
-                    issue = jira_service.client.issue(issue_key)
-                    issue_type = issue.fields.issuetype.name if hasattr(issue.fields, 'issuetype') else "Unknown"
-                    summary = issue.fields.summary if hasattr(issue.fields, 'summary') else ""
-                    issues_dict[issue_key] = (summary, issue_type)
+                    issue_data = jira_service.get_issue_details(issue_key)
+                    if issue_data:
+                        fields = issue_data.get('fields', {})
+                        issue_type = fields.get('issuetype', {}).get('name', 'Unknown')
+                        summary = fields.get('summary', '')
+                        issues_dict[issue_key] = (summary, issue_type)
+                    else:
+                        issues_dict[issue_key] = ("", "")
                 except Exception:
                     issues_dict[issue_key] = ("", "")
             

@@ -1,13 +1,12 @@
-"""Jira authentication using Personal Access Token."""
+"""Jira authentication using Personal Access Token with requests library."""
 
 import base64
 import urllib3
 from typing import Optional
-from jira import JIRA
-from jira.exceptions import JIRAError
+import requests
+from requests.auth import HTTPBasicAuth
 from rich.console import Console
 from rich.panel import Panel
-from rich.text import Text
 
 from .settings import Settings, get_settings
 
@@ -15,7 +14,7 @@ console = Console()
 
 
 class JiraAuth:
-    """Jira authentication handler."""
+    """Jira authentication handler using requests library."""
     
     def __init__(self, settings: Optional[Settings] = None):
         """Initialize Jira authentication.
@@ -24,66 +23,72 @@ class JiraAuth:
             settings: Application settings (defaults to loading from env)
         """
         self.settings = settings or get_settings()
-        self._client: Optional[JIRA] = None
+        self._session: Optional[requests.Session] = None
     
     @property
-    def client(self) -> JIRA:
-        """Get or create Jira client instance.
+    def session(self) -> requests.Session:
+        """Get or create requests session with authentication.
         
         Returns:
-            JIRA client instance
-            
-        Raises:
-            ValueError: If credentials are missing
+            requests.Session with JIRA authentication configured
         """
-        if self._client is None:
+        if self._session is None:
             if not all([self.settings.jira_server, self.settings.jira_email, self.settings.jira_api_token]):
                 raise ValueError(
                     "Missing required Jira credentials. "
                     "Please set JIRA_SERVER, JIRA_EMAIL, and JIRA_API_TOKEN in .env file"
                 )
             
-            try:
-                # Configure SSL verification and API path based on settings
-                options = {}
-                if not self.settings.jira_verify_ssl:
-                    options['verify'] = False
-                    # Suppress SSL warnings when verification is disabled
-                    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                
-                # Configure API version using the correct parameter
-                # According to JIRA library docs, use 'rest_api_version' parameter, not 'rest_path'
-                # This properly sets the API version (e.g., '1.0', '2', '3', 'latest')
-                if self.settings.jira_api_version:
-                    # Use rest_api_version parameter - this is the correct way per library docs
-                    version = self.settings.jira_api_version.strip()
-                    options['rest_api_version'] = version
-                elif self.settings.jira_api_path:
-                    # If API path is specified instead of version, extract version from path
-                    api_path = self.settings.jira_api_path.rstrip('/')
-                    # Extract version from path like /rest/api/1.0 or /rest/api/latest
-                    if '/api/' in api_path:
-                        version = api_path.split('/api/')[-1]
-                        options['rest_api_version'] = version
-                    else:
-                        # Fallback to rest_path if version cannot be extracted
-                        if api_path.startswith('/rest'):
-                            api_path = api_path[5:]
-                        if api_path.startswith('/'):
-                            api_path = api_path[1:]
-                        options['rest_path'] = api_path
-                
-                # Initialize JIRA client with rest_api_version parameter
-                # This is the correct way to specify API version per library documentation
-                self._client = JIRA(
-                    server=self.settings.jira_url,
-                    basic_auth=(self.settings.jira_email, self.settings.jira_api_token),
-                    options=options if options else None
-                )
-            except JIRAError as e:
-                raise ValueError(f"Failed to connect to Jira: {str(e)}")
+            # Create session with authentication
+            self._session = requests.Session()
+            self._session.auth = HTTPBasicAuth(self.settings.jira_email, self.settings.jira_api_token)
+            
+            # Configure SSL verification
+            if not self.settings.jira_verify_ssl:
+                self._session.verify = False
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            
+            # Set default headers
+            self._session.headers.update({
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            })
         
-        return self._client
+        return self._session
+    
+    @property
+    def base_url(self) -> str:
+        """Get base JIRA API URL."""
+        base = self.settings.jira_url.rstrip('/')
+        api_version = '2'  # Default to API version 2
+        
+        if self.settings.jira_api_version:
+            api_version = self.settings.jira_api_version.strip()
+        elif self.settings.jira_api_path:
+            # Extract version from path
+            api_path = self.settings.jira_api_path.rstrip('/')
+            if '/api/' in api_path:
+                api_version = api_path.split('/api/')[-1]
+        
+        return f"{base}/rest/api/{api_version}"
+    
+    def _make_request(self, method: str, endpoint: str, **kwargs) -> requests.Response:
+        """Make HTTP request to JIRA API.
+        
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE)
+            endpoint: API endpoint (e.g., '/issue', '/search')
+            **kwargs: Additional arguments to pass to requests
+            
+        Returns:
+            requests.Response object
+        """
+        url = f"{self.base_url}{endpoint}"
+        response = self.session.request(method, url, **kwargs)
+        
+        # Raise exception for bad status codes
+        response.raise_for_status()
+        return response
     
     def test_connection(self) -> bool:
         """Test connection to Jira server.
@@ -92,12 +97,14 @@ class JiraAuth:
             True if connection successful, False otherwise
         """
         try:
-            client = self.client
-            user_info = client.current_user()
+            # Test connection by getting current user info
+            response = self._make_request('GET', '/myself')
+            user_info = response.json()
             
             console.print(Panel(
                 f"[green]✓[/green] Connected to Jira successfully!\n\n"
                 f"Server: {self.settings.jira_url}\n"
+                f"API Base: {self.base_url}\n"
                 f"User: {user_info.get('displayName', self.settings.jira_email)}\n"
                 f"Email: {user_info.get('emailAddress', self.settings.jira_email)}",
                 title="Connection Test",
@@ -105,16 +112,26 @@ class JiraAuth:
             ))
             return True
             
-        except Exception as e:
+        except requests.exceptions.RequestException as e:
             console.print(Panel(
                 f"[red]✗[/red] Connection failed!\n\n"
                 f"Error: {str(e)}\n\n"
                 f"Please check:\n"
                 f"• JIRA_SERVER is correct (no trailing slash)\n"
                 f"• JIRA_EMAIL is correct\n"
-                f"• JIRA_API_TOKEN is valid\n\n"
+                f"• JIRA_API_TOKEN is valid\n"
+                f"• JIRA_API_VERSION is correct (if specified)\n\n"
                 f"Get your API token from:\n"
                 f"https://id.atlassian.com/manage-profile/security/api-tokens",
+                title="Connection Error",
+                border_style="red"
+            ))
+            return False
+        except Exception as e:
+            console.print(Panel(
+                f"[red]✗[/red] Connection failed!\n\n"
+                f"Error: {str(e)}\n\n"
+                f"Please check your configuration.",
                 title="Connection Error",
                 border_style="red"
             ))
@@ -142,25 +159,10 @@ class JiraAuth:
         }
         
         try:
-            client = self.client
-            
-            # Get API version from client options
-            if hasattr(client, '_options'):
-                if 'rest_api_version' in client._options:
-                    version = client._options.get('rest_api_version', '')
-                    result['api_version'] = version
-                    result['api_path'] = f'/api/{version}'
-                elif 'rest_path' in client._options:
-                    # Fallback for rest_path if rest_api_version is not available
-                    rest_path = client._options.get('rest_path', '')
-                    result['api_path'] = f'/{rest_path}' if rest_path else None
-                    if 'api/' in rest_path:
-                        version_part = rest_path.split('api/')[-1]
-                        result['api_version'] = version_part
-            elif self.settings.jira_api_version:
-                version = self.settings.jira_api_version.strip()
-                result['api_version'] = version
-                result['api_path'] = f'/api/{version}'
+            # Get API version from settings
+            if self.settings.jira_api_version:
+                result['api_version'] = self.settings.jira_api_version.strip()
+                result['api_path'] = f'/rest/api/{result["api_version"]}'
             elif self.settings.jira_api_path:
                 api_path = self.settings.jira_api_path.rstrip('/')
                 if api_path.startswith('/rest'):
@@ -169,21 +171,20 @@ class JiraAuth:
                 if '/api/' in api_path:
                     version_part = api_path.split('/api/')[-1]
                     result['api_version'] = version_part
+            else:
+                result['api_version'] = '2'  # Default
+                result['api_path'] = '/rest/api/2'
             
             # Try to get server info to check compatibility
             try:
-                server_info = client.server_info()
+                response = self._make_request('GET', '/serverInfo')
+                server_info = response.json()
                 
                 result['compatible'] = True
                 result['server_version'] = server_info.get('version', 'Unknown')
                 result['baseUrl'] = server_info.get('baseUrl', self.settings.jira_url)
                 
-                # Extract API version from options if not already set
-                if not result['api_version'] and hasattr(client, '_options'):
-                    if 'rest_api_version' in client._options:
-                        result['api_version'] = client._options.get('rest_api_version')
-                
-            except Exception as e:
+            except requests.exceptions.RequestException as e:
                 result['error'] = str(e)
                 result['compatible'] = False
                 
@@ -194,8 +195,7 @@ class JiraAuth:
         return result
     
     def close(self):
-        """Close Jira client connection."""
-        if self._client:
-            self._client.close()
-            self._client = None
-
+        """Close Jira session connection."""
+        if self._session:
+            self._session.close()
+            self._session = None

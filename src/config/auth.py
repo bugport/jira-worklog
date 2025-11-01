@@ -44,17 +44,21 @@ class JiraAuth:
                 )
             
             try:
-                # Configure SSL verification based on settings
+                # Configure SSL verification and API path based on settings
                 options = {}
                 if not self.settings.jira_verify_ssl:
                     options['verify'] = False
                     # Suppress SSL warnings when verification is disabled
                     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 
+                # Configure custom API path if specified
+                if self.settings.jira_api_path:
+                    options['rest_path'] = self.settings.jira_api_path.rstrip('/')
+                
                 self._client = JIRA(
                     server=self.settings.jira_url,
                     basic_auth=(self.settings.jira_email, self.settings.jira_api_token),
-                    options=options
+                    options=options if options else None
                 )
             except JIRAError as e:
                 raise ValueError(f"Failed to connect to Jira: {str(e)}")

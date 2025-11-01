@@ -72,7 +72,18 @@ JIRA_API_TOKEN=your-api-token
 # Optional: Bypass SSL verification (for self-signed certificates)
 # WARNING: Only use in development/testing environments
 JIRA_VERIFY_SSL=false
+
+# Optional: Custom JIRA API path (default: auto-detected)
+# Set if your JIRA API is located at a custom path
+# Example: If your API is at https://baseurl/rest/api/latest:
+#   JIRA_SERVER=https://baseurl
+#   JIRA_API_PATH=/rest/api/latest
+JIRA_API_PATH=/rest/api/latest
 ```
+
+**Note**: If your JIRA API is located at `https://baseurl/rest/api/latest`, set:
+- `JIRA_SERVER=https://baseurl` (base URL without the API path)
+- `JIRA_API_PATH=/rest/api/latest` (the API path)
 
 ### Getting Your API Token
 
